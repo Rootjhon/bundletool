@@ -48,6 +48,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+import java.util.Date;
 
 /** Ddmlib-backed implementation of the {@link Device}. */
 public class DdmlibDevice extends Device {
@@ -259,11 +260,13 @@ public class DdmlibDevice extends Device {
   private void pushFilesToLocation(String splitsPath, ImmutableList<Path> files)
       throws IOException, SyncException, TimeoutException, AdbCommandRejectedException {
     for (Path path : files) {
+      System.err.printf(
+           "[%s] Start pushe \"%s\"%n",new Date(), joinUnixPaths(splitsPath, path.getFileName().toString()));
       device.pushFile(
           path.toFile().getAbsolutePath(),
           joinUnixPaths(splitsPath, path.getFileName().toString()));
       System.err.printf(
-          "Pushed \"%s\"%n", joinUnixPaths(splitsPath, path.getFileName().toString()));
+           "[%s] Pushed \"%s\"%n",new Date(), joinUnixPaths(splitsPath, path.getFileName().toString()));
     }
   }
 

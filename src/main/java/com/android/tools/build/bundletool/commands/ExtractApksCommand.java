@@ -66,7 +66,7 @@ import java.util.logging.Logger;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
-
+import java.util.Date;
 /** Extracts from an APK Set the APKs to be installed on a given device. */
 @AutoValue
 public abstract class ExtractApksCommand {
@@ -259,7 +259,7 @@ public abstract class ExtractApksCommand {
                 FileUtils.createDirectories(dir);
               }
             });
-
+    System.err.printf("[%s] Start extract APKs to: %s%n", new Date(), outputDirectoryPath.toString());
     ImmutableList.Builder<Path> builder = ImmutableList.builder();
     try (ZipFile apksArchive = new ZipFile(getApksArchivePath().toFile())) {
       for (GeneratedApk matchedApk : generatedApks) {
@@ -284,8 +284,7 @@ public abstract class ExtractApksCommand {
           String.format("Error while processing the APK Set archive '%s'.", getApksArchivePath()),
           e);
     }
-    System.err.printf(
-        "The APKs have been extracted in the directory: %s%n", outputDirectoryPath.toString());
+    System.err.printf("[%s] The APKs have been extracted in the directory: %s%n", new Date(), outputDirectoryPath.toString());
     return builder.build();
   }
 
