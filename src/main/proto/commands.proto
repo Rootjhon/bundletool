@@ -36,6 +36,38 @@ message BuildApksResult {
   repeated PermanentlyFusedModule permanently_fused_modules = 8;
 }
 
+message BuildSdkApksResult {
+  // The package name of the SDK.
+  //
+  // For instance, for SDK “com.foo.bar” with major version “15”,
+  // the package name stored here is simply “com.foo.bar”.
+  // This is different from the package name that is installed in Android
+  // PackageManager on sandbox-enabled devices (which is “com.foo.bar_15”).
+  string package_name = 1;
+
+  // Variants generated for the SDK.
+  // At the moment, there is always a single variant.
+  repeated Variant variant = 2;
+
+  Bundletool bundletool = 3;
+
+  SdkVersionInformation version = 4;
+}
+
+message SdkVersionInformation {
+  // Major version of the SDK.
+  int32 major = 1;
+
+  // Minor version of the SDK.
+  int32 minor = 2;
+
+  // Patch version of the SDK.
+  int32 patch = 3;
+
+  // A unique version code assigned to the SDK by the caller of build-sdk-apks.
+  int32 version_code = 4;
+}
+
 // Variant is a group of APKs that covers a part of the device configuration
 // space. APKs from multiple variants are never combined on one device.
 message Variant {
@@ -52,6 +84,22 @@ message Variant {
   // configuration, with higher variant numbers having priority over lower
   // variant numbers.
   uint32 variant_number = 3;
+
+  // Extra information about the variant e.g. has uncompressed dex files or
+  // uncompressed native libraries
+  VariantProperties variant_properties = 4;
+}
+
+// Describes properties of a variant
+message VariantProperties {
+  // Variant has uncompressed dex files
+  bool uncompressed_dex = 1;
+
+  // Variant has uncompressed native libraries
+  bool uncompressed_native_libraries = 2;
+
+  // Variant has sparse encoded resource tables
+  bool sparse_encoding = 3;
 }
 
 // Describes the output of the "extract-apks" command.
@@ -113,6 +161,9 @@ message ModuleMetadata {
 
   // Deprecated. Please use delivery_type.
   bool on_demand_deprecated = 2 [deprecated = true];
+
+  // Runtime-enabled SDK dependencies of this module.
+  repeated RuntimeEnabledSdkDependency runtime_enabled_sdk_dependencies = 8;
 }
 
 // Set of asset slices belonging to a single asset module.
@@ -181,9 +232,17 @@ message ApkDescription {
     SplitApkMetadata asset_slice_metadata = 7;
     // Set only for APEX APKs.
     ApexApkMetadata apex_apk_metadata = 8;
-    // Set only for hibernated APKs.
-    HibernatedApkMetadata hibernated_apk_metadata = 9;
+    // Set only for archived APKs.
+    ArchivedApkMetadata archived_apk_metadata = 9;
   }
+
+  SigningDescription signing_description = 10;
+}
+
+// Holds data specific to signing configuration applied on the APKs.
+message SigningDescription {
+  // Denotes if the generated APK to be signed with the rotated key.
+  bool signed_with_rotated_key = 1;
 }
 
 // Holds data specific to Split APKs.
@@ -216,8 +275,8 @@ message ApexApkMetadata {
   repeated ApexEmbeddedApkConfig apex_embedded_apk_config = 1;
 }
 
-// Holds data specific to Hibernated APKs.
-message HibernatedApkMetadata {}
+// Holds data specific to Archived APKs.
+message ArchivedApkMetadata {}
 
 message LocalTestingInfo {
   // Indicates if the bundle is built in local testing mode.
@@ -253,3 +312,17 @@ message PermanentlyFusedModule {
   // Module name.
   string name = 1;
 }
+
+// Describes a runtime-enabled SDK that the app depends on.
+message RuntimeEnabledSdkDependency {
+  // Package name of the runtime-enabled SDK.
+  // Required.
+  string package_name = 1;
+  // Major version of the runtime-enabled SDK.
+  // Required.
+  int32 major_version = 2;
+  // Minor version of the runtime-enabled SDK.
+  // Required.
+  int32 minor_version = 3;
+}
+

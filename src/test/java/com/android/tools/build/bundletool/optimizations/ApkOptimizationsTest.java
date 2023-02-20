@@ -16,12 +16,14 @@
 package com.android.tools.build.bundletool.optimizations;
 
 import static com.android.tools.build.bundletool.model.OptimizationDimension.ABI;
+import static com.android.tools.build.bundletool.model.OptimizationDimension.COUNTRY_SET;
 import static com.android.tools.build.bundletool.model.OptimizationDimension.DEVICE_TIER;
 import static com.android.tools.build.bundletool.model.OptimizationDimension.LANGUAGE;
 import static com.android.tools.build.bundletool.model.OptimizationDimension.SCREEN_DENSITY;
 import static com.android.tools.build.bundletool.model.OptimizationDimension.TEXTURE_COMPRESSION_FORMAT;
 import static com.google.common.truth.Truth.assertThat;
 
+import com.android.bundle.Config.UncompressDexFiles.UncompressedDexTargetSdk;
 import com.android.tools.build.bundletool.model.version.Version;
 import com.google.common.collect.ImmutableSet;
 import org.junit.Test;
@@ -73,15 +75,51 @@ public class ApkOptimizationsTest {
   }
 
   @Test
+  public void
+      getDefaultOptimizations_1_11_3_onlySplitsByAbiDensityTextureLanguageAndUncompressNativeLibsUncompressedDex() {
+    ApkOptimizations defaultOptimizations =
+        ApkOptimizations.getDefaultOptimizationsForVersion(Version.of("1.11.3"));
+    assertThat(defaultOptimizations)
+        .isEqualTo(
+            ApkOptimizations.builder()
+                .setSplitDimensions(
+                    ImmutableSet.of(ABI, SCREEN_DENSITY, TEXTURE_COMPRESSION_FORMAT, LANGUAGE))
+                .setUncompressNativeLibraries(true)
+                .setStandaloneDimensions(ImmutableSet.of(ABI, SCREEN_DENSITY))
+                .setUncompressDexFiles(true)
+                .setUncompressedDexTargetSdk(UncompressedDexTargetSdk.SDK_31)
+                .build());
+  }
+
+  @Test
+  public void
+      getDefaultOptimizations_1_13_2_onlySplitsByAbiDensityTextureLanguageUncompressNativeLibsUncompressedDexDeviceTiers() {
+    ApkOptimizations defaultOptimizations =
+        ApkOptimizations.getDefaultOptimizationsForVersion(Version.of("1.13.2"));
+    assertThat(defaultOptimizations)
+        .isEqualTo(
+            ApkOptimizations.builder()
+                .setSplitDimensions(
+                    ImmutableSet.of(
+                        ABI, SCREEN_DENSITY, TEXTURE_COMPRESSION_FORMAT, LANGUAGE, DEVICE_TIER))
+                .setUncompressNativeLibraries(true)
+                .setStandaloneDimensions(ImmutableSet.of(ABI, SCREEN_DENSITY))
+                .setUncompressDexFiles(true)
+                .setUncompressedDexTargetSdk(UncompressedDexTargetSdk.SDK_31)
+                .build());
+  }
+
+  @Test
   public void getSplitDimensionsForAssetModules_returnsDimensionsSupportedByAssetModules() {
     ApkOptimizations optimizations =
         ApkOptimizations.builder()
             .setSplitDimensions(
-                ImmutableSet.of(ABI, SCREEN_DENSITY, TEXTURE_COMPRESSION_FORMAT, DEVICE_TIER))
+                ImmutableSet.of(
+                    ABI, SCREEN_DENSITY, TEXTURE_COMPRESSION_FORMAT, DEVICE_TIER, COUNTRY_SET))
             .setStandaloneDimensions(ImmutableSet.of(ABI))
             .build();
 
     assertThat(optimizations.getSplitDimensionsForAssetModules())
-        .containsExactly(TEXTURE_COMPRESSION_FORMAT, DEVICE_TIER);
+        .containsExactly(TEXTURE_COMPRESSION_FORMAT, DEVICE_TIER, COUNTRY_SET);
   }
 }

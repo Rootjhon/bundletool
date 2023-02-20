@@ -77,6 +77,8 @@ import com.android.bundle.Config.SplitsConfig;
 import com.android.bundle.Config.StandaloneConfig;
 import com.android.bundle.Config.StandaloneConfig.DexMergingStrategy;
 import com.android.bundle.Config.SuffixStripping;
+import com.android.bundle.RuntimeEnabledSdkConfigProto.RuntimeEnabledSdk;
+import com.android.bundle.RuntimeEnabledSdkConfigProto.RuntimeEnabledSdkConfig;
 import com.android.bundle.Targeting.Abi.AbiAlias;
 import com.android.bundle.Targeting.ApkTargeting;
 import com.android.bundle.Targeting.ScreenDensity.DensityAlias;
@@ -84,13 +86,17 @@ import com.android.bundle.Targeting.TextureCompressionFormat.TextureCompressionF
 import com.android.bundle.Targeting.VariantTargeting;
 import com.android.tools.build.bundletool.commands.BuildApksModule;
 import com.android.tools.build.bundletool.commands.CommandScoped;
+import com.android.tools.build.bundletool.model.AppBundle;
 import com.android.tools.build.bundletool.model.BundleMetadata;
 import com.android.tools.build.bundletool.model.BundleModule;
 import com.android.tools.build.bundletool.model.ModuleSplit;
 import com.android.tools.build.bundletool.model.ModuleSplit.SplitType;
 import com.android.tools.build.bundletool.model.OptimizationDimension;
+import com.android.tools.build.bundletool.model.ZipPath;
 import com.android.tools.build.bundletool.model.utils.xmlproto.XmlProtoElement;
 import com.android.tools.build.bundletool.optimizations.ApkOptimizations;
+import com.android.tools.build.bundletool.splitters.RuntimeEnabledSdkTableInjector;
+import com.android.tools.build.bundletool.testing.AppBundleBuilder;
 import com.android.tools.build.bundletool.testing.BundleModuleBuilder;
 import com.android.tools.build.bundletool.testing.ResourceTableBuilder;
 import com.android.tools.build.bundletool.testing.TestModule;
@@ -1531,6 +1537,83 @@ public class StandaloneApksGeneratorTest {
     assertThat(fatShard.getSplitType()).isEqualTo(SplitType.STANDALONE);
     assertThat(extractPaths(fatShard.getEntries()))
         .containsExactly("assets/file.txt", "dex/classes.dex", "root/license.dat");
+  }
+
+  @Test
+  public void standaloneApks_injectBinaryArtProfiles() throws Exception {
+    byte[] content = new byte[] {1, 4, 3, 2};
+    TestComponent.useTestModule(
+        this,
+        TestModule.builder()
+            .withBundleMetadata(
+                BundleMetadata.builder()
+                    .addFile(
+                        "com.android.tools.build.profiles",
+                        "baseline.prof",
+                        ByteSource.wrap(content))
+                    .build())
+            .build());
+    BundleModule bundleModule =
+        new BundleModuleBuilder("base")
+            .addFile("dex/classes.dex")
+            .setManifest(androidManifest("com.test.app"))
+            .build();
+
+    ImmutableList<ModuleSplit> shards =
+        standaloneApksGenerator.generateStandaloneApks(
+            ImmutableList.of(bundleModule), standaloneApkOptimizations(OptimizationDimension.ABI));
+
+    assertThat(shards).hasSize(1);
+    assertThat(shards.get(0).getSplitType()).isEqualTo(SplitType.STANDALONE);
+    assertThat(extractPaths(shards.get(0).getEntries()))
+        .containsAtLeast("dex/classes.dex", "assets/dexopt/baseline.prof");
+
+    byte[] actualContent =
+        shards
+            .get(0)
+            .findEntry(ZipPath.create("assets/dexopt/baseline.prof"))
+            .get()
+            .getContent()
+            .read();
+    assertThat(actualContent).isEqualTo(content);
+  }
+
+  @Test
+  public void bundleHasdSdkDeps_sdkTableConfigInjected() {
+    RuntimeEnabledSdkConfig runtimeEnabledSdkConfig =
+        RuntimeEnabledSdkConfig.newBuilder()
+            .addRuntimeEnabledSdk(
+                RuntimeEnabledSdk.newBuilder()
+                    .setPackageName("com.test.sdk")
+                    .setVersionMajor(1)
+                    .setVersionMinor(2)
+                    .setCertificateDigest("certdigest"))
+            .build();
+    BundleModule bundleModule =
+        new BundleModuleBuilder("base")
+            .setManifest(androidManifest("com.test.app"))
+            .setRuntimeEnabledSdkConfig(runtimeEnabledSdkConfig)
+            .build();
+    AppBundle appBundle = new AppBundleBuilder().addModule(bundleModule).build();
+    TestComponent.useTestModule(this, TestModule.builder().withAppBundle(appBundle).build());
+
+    ImmutableList<ModuleSplit> shards =
+        standaloneApksGenerator.generateStandaloneApks(
+            ImmutableList.of(bundleModule), standaloneApkOptimizations(OptimizationDimension.ABI));
+
+    shards.forEach(
+        shard ->
+            assertThat(
+                    shard.getEntries().stream()
+                        .filter(
+                            entry ->
+                                entry
+                                    .getPath()
+                                    .equals(
+                                        ZipPath.create(
+                                            RuntimeEnabledSdkTableInjector
+                                                .RUNTIME_ENABLED_SDK_TABLE_FILE_PATH))))
+                .hasSize(1));
   }
 
   private static ApkOptimizations standaloneApkOptimizations(OptimizationDimension... dimensions) {

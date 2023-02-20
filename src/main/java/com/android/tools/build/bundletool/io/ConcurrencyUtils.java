@@ -16,6 +16,8 @@
 
 package com.android.tools.build.bundletool.io;
 
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+
 import com.android.tools.build.bundletool.model.exceptions.BundleToolException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -31,9 +33,23 @@ import java.util.concurrent.Future;
 /** Utility methods for working with concurrent code. */
 final class ConcurrencyUtils {
 
-  /** Retrieves results of all futures, if they succeed. If any fails, eagerly throws. */
+  /** Retrieves results of all futures, if they succeed. If any fails, throws. */
   public static <T> ImmutableList<T> waitForAll(Iterable<ListenableFuture<T>> futures) {
-    return ImmutableList.copyOf(waitFor(Futures.allAsList(futures)));
+    // Note that all futures are already completed due to the Futures#successfulAsList(), however
+    // it means that some futures might fail, and we want to propagate a failure down the line. The
+    // reason that we don't use Futures#allAsList() directly is it will fail-fast and will cause the
+    // other existing futures to continue running until they fail (e.g. if they depend on the
+    // temporary file which gets deleted then it will produce NoFileFound exception).
+    try {
+      return ImmutableList.copyOf(waitFor(Futures.allAsList(futures)));
+    } catch (RuntimeException e) {
+      try {
+        waitFor(Futures.whenAllComplete(futures).call(() -> null, directExecutor()));
+      } catch (RuntimeException ignoredException) {
+        // Silently ignored - only report the very first Exception encountered.
+      }
+      throw e;
+    }
   }
 
   public static <K, V> ImmutableMap<K, V> waitForAll(Map<K, ListenableFuture<V>> futures) {
@@ -44,7 +60,7 @@ final class ConcurrencyUtils {
     return finishedMap.build();
   }
 
-  public static <T> T waitFor(Future<T> future) {
+  private static <T> T waitFor(Future<T> future) {
     try {
       return future.get();
     } catch (ExecutionException e) {

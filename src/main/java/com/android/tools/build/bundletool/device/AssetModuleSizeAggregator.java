@@ -21,9 +21,11 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import com.android.bundle.Commands.ApkDescription;
 import com.android.bundle.Commands.AssetSliceSet;
 import com.android.bundle.Targeting.AbiTargeting;
+import com.android.bundle.Targeting.CountrySetTargeting;
 import com.android.bundle.Targeting.DeviceTierTargeting;
 import com.android.bundle.Targeting.LanguageTargeting;
 import com.android.bundle.Targeting.ScreenDensityTargeting;
+import com.android.bundle.Targeting.SdkRuntimeTargeting;
 import com.android.bundle.Targeting.SdkVersionTargeting;
 import com.android.bundle.Targeting.TextureCompressionFormatTargeting;
 import com.android.bundle.Targeting.VariantTargeting;
@@ -86,6 +88,8 @@ public class AssetModuleSizeAggregator extends AbstractSizeAggregator {
             : getAllTextureCompressionFormatTargetings(apkDescriptions);
     ImmutableSet<DeviceTierTargeting> devicetierTargetingOptions =
         getAllDeviceTierTargetings(apkDescriptions);
+    ImmutableSet<CountrySetTargeting> countrySetTargetingOptions =
+        getAllCountrySetTargetings(apkDescriptions);
 
     return getSizesPerConfiguration(
         sdkVersionTargetingOptions,
@@ -93,7 +97,9 @@ public class AssetModuleSizeAggregator extends AbstractSizeAggregator {
         languageTargetingOptions,
         screenDensityTargetingOptions,
         textureCompressionFormatTargetingOptions,
-        devicetierTargetingOptions);
+        devicetierTargetingOptions,
+        countrySetTargetingOptions,
+        variantTargeting.getSdkRuntimeTargeting());
   }
 
   @Override
@@ -103,7 +109,9 @@ public class AssetModuleSizeAggregator extends AbstractSizeAggregator {
       ScreenDensityTargeting screenDensityTargeting,
       LanguageTargeting languageTargeting,
       TextureCompressionFormatTargeting textureTargeting,
-      DeviceTierTargeting deviceTierTargeting) {
+      DeviceTierTargeting deviceTierTargeting,
+      CountrySetTargeting countrySetTargeting,
+      SdkRuntimeTargeting sdkRuntimeTargeting) {
     return new ApkMatcher(
             getDeviceSpec(
                 getSizeRequest.getDeviceSpec(),
@@ -112,8 +120,11 @@ public class AssetModuleSizeAggregator extends AbstractSizeAggregator {
                 screenDensityTargeting,
                 languageTargeting,
                 textureTargeting,
-                deviceTierTargeting),
+                deviceTierTargeting,
+                countrySetTargeting,
+                sdkRuntimeTargeting),
             getSizeRequest.getModules(),
+            /* includeInstallTimeAssetModules= */ !getSizeRequest.getModules().isPresent(),
             getSizeRequest.getInstant(),
             /* ensureDensityAndAbiApksMatched= */ false)
         .getMatchingApksFromAssetModules(assetModules);

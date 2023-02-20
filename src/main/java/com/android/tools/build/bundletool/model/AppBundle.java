@@ -16,43 +16,39 @@
 
 package com.android.tools.build.bundletool.model;
 
+import static com.android.tools.build.bundletool.model.utils.BundleParser.extractModules;
+import static com.android.tools.build.bundletool.model.utils.BundleParser.readBundleConfig;
+import static com.android.tools.build.bundletool.model.utils.BundleParser.readBundleMetadata;
+import static com.android.tools.build.bundletool.model.utils.BundleParser.sanitize;
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableListMultimap.toImmutableListMultimap;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static java.util.function.Function.identity;
 
+import com.android.bundle.Config.ApexConfig;
 import com.android.bundle.Config.BundleConfig;
 import com.android.bundle.Config.BundleConfig.BundleType;
 import com.android.bundle.Config.StandaloneConfig.DexMergingStrategy;
 import com.android.bundle.Files.TargetedNativeDirectory;
+import com.android.bundle.RuntimeEnabledSdkConfigProto.RuntimeEnabledSdk;
 import com.android.bundle.Targeting.Abi;
 import com.android.bundle.Targeting.NativeDirectoryTargeting;
 import com.android.tools.build.bundletool.model.BundleModule.ModuleType;
-import com.android.tools.build.bundletool.model.ModuleEntry.ModuleEntryBundleLocation;
 import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
-import com.android.tools.build.bundletool.model.utils.ZipUtils;
 import com.android.tools.build.bundletool.model.version.Version;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import com.google.errorprone.annotations.Immutable;
-import com.google.protobuf.InvalidProtocolBufferException;
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.nio.file.Paths;
 import java.util.Collection;
-import java.util.Enumeration;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Stream;
-import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
-import javax.annotation.CheckReturnValue;
 
 /**
  * Represents an app bundle.
@@ -62,17 +58,38 @@ import javax.annotation.CheckReturnValue;
  */
 @Immutable
 @AutoValue
-public abstract class AppBundle {
+public abstract class AppBundle implements Bundle {
 
   public static final ZipPath METADATA_DIRECTORY = ZipPath.create("BUNDLE-METADATA");
 
   public static final String BUNDLE_CONFIG_FILE_NAME = "BundleConfig.pb";
 
+  /** Top-level directory names that are not recognized as modules. */
+  public static final ImmutableSet<ZipPath> NON_MODULE_DIRECTORIES =
+      ImmutableSet.of(METADATA_DIRECTORY, ZipPath.create("META-INF"));
+
+  /**
+   * File path for opting out from hibernation. To opt out this file should be included within base
+   * module of the {@link AppBundle}. More information can be found in the <a
+   * href="https://android-developers.googleblog.com/2022/03/freeing-up-60-of-storage-for-apps.html">blog
+   * post</a>.
+   */
+  public static final String ARCHIVE_OPT_OUT_XML_PATH =
+      "res/xml/com_android_vending_archive_opt_out.xml";
+
   /** Builds an {@link AppBundle} from an App Bundle on disk. */
   public static AppBundle buildFromZip(ZipFile bundleFile) {
     BundleConfig bundleConfig = readBundleConfig(bundleFile);
+    Optional<ApexConfig> apexConfig =
+        bundleConfig.hasApexConfig() ? Optional.of(bundleConfig.getApexConfig()) : Optional.empty();
     return buildFromModules(
-        sanitize(extractModules(bundleFile, bundleConfig)),
+        sanitize(
+            extractModules(
+                bundleFile,
+                bundleConfig.getType(),
+                Version.of(bundleConfig.getBundletool().getVersion()),
+                apexConfig,
+                NON_MODULE_DIRECTORIES)),
         bundleConfig,
         readBundleMetadata(bundleFile));
   }
@@ -89,15 +106,29 @@ public abstract class AppBundle {
     ImmutableSet<String> pinnedResourceNames =
         ImmutableSet.copyOf(bundleConfig.getMasterResources().getResourceNamesList());
 
+    ImmutableListMultimap<String, RuntimeEnabledSdk> runtimeEnabledSdkDependencies =
+        modules.stream()
+            .filter(module -> module.getRuntimeEnabledSdkConfig().isPresent())
+            .map(module -> module.getRuntimeEnabledSdkConfig().get())
+            .flatMap(
+                runtimeEnabledSdkConfig ->
+                    runtimeEnabledSdkConfig.getRuntimeEnabledSdkList().stream())
+            .collect(toImmutableListMultimap(RuntimeEnabledSdk::getPackageName, identity()));
+    validateUniqueSdkDependencies(runtimeEnabledSdkDependencies);
+
     return builder()
         .setModules(Maps.uniqueIndex(modules, BundleModule::getName))
         .setMasterPinnedResourceIds(pinnedResourceIds)
         .setMasterPinnedResourceNames(pinnedResourceNames)
         .setBundleConfig(bundleConfig)
         .setBundleMetadata(bundleMetadata)
+        .setRuntimeEnabledSdkDependencies(
+            runtimeEnabledSdkDependencies.values().stream()
+                .collect(toImmutableMap(RuntimeEnabledSdk::getPackageName, identity())))
         .build();
   }
 
+  @Override
   public abstract ImmutableMap<BundleModuleName, BundleModule> getModules();
 
   /**
@@ -113,7 +144,18 @@ public abstract class AppBundle {
 
   public abstract BundleConfig getBundleConfig();
 
+  @Override
   public abstract BundleMetadata getBundleMetadata();
+
+  abstract Optional<String> getPackageNameOptional();
+
+  /**
+   * Returns runtime-enabled SDK dependencies of this bundle, keyed by SDK package name.
+   *
+   * <p>Note, that this method flattens dependencies across all modules, forgetting the association
+   * of the runtime-enabled SDK dependencies with specific app bundle modules.
+   */
+  public abstract ImmutableMap<String, RuntimeEnabledSdk> getRuntimeEnabledSdkDependencies();
 
   /**
    * Returns all feature modules for this bundle, including the base module.
@@ -137,7 +179,15 @@ public abstract class AppBundle {
     return getModule(BundleModuleName.BASE_MODULE_NAME);
   }
 
+  public boolean hasBaseModule() {
+    return getModules().containsKey(BundleModuleName.BASE_MODULE_NAME);
+  }
+
+  @Override
   public String getPackageName() {
+    if (getPackageNameOptional().isPresent()) {
+      return getPackageNameOptional().get();
+    }
     if (isAssetOnly()) {
       return getModules().values().stream()
           .map(module -> module.getAndroidManifest().getPackageName())
@@ -147,6 +197,7 @@ public abstract class AppBundle {
     return getBaseModule().getAndroidManifest().getPackageName();
   }
 
+  @Override
   public BundleModule getModule(BundleModuleName moduleName) {
     BundleModule module = getModules().get(moduleName);
     checkState(module != null, "Module '%s' not found.", moduleName);
@@ -182,36 +233,6 @@ public abstract class AppBundle {
         .collect(toImmutableSet());
   }
 
-  /**
-   * Returns the {@link BundleModuleName} corresponding to the provided zip entry. If the zip entry
-   * does not belong to a module, a null {@link BundleModuleName} is returned.
-   */
-  public static Optional<BundleModuleName> extractModuleName(ZipEntry entry) {
-    ZipPath path = ZipPath.create(entry.getName());
-
-    // Ignoring bundle metadata files.
-    if (path.startsWith(METADATA_DIRECTORY)) {
-      return Optional.empty();
-    }
-
-    // Ignoring signature related files.
-    if (path.startsWith("META-INF")) {
-      return Optional.empty();
-    }
-
-    // Ignoring top-level files.
-    if (path.getNameCount() <= 1) {
-      return Optional.empty();
-    }
-
-    // Temporarily excluding .class files.
-    if (path.toString().endsWith(".class")) {
-      return Optional.empty();
-    }
-
-    return Optional.of(BundleModuleName.create(path.getName(0).toString()));
-  }
-
   public boolean isApex() {
     return !isAssetOnly() && getBaseModule().getApexConfig().isPresent();
   }
@@ -240,114 +261,29 @@ public abstract class AppBundle {
     return getBundleConfig().getOptimizations().getStandaloneConfig().getDexMergingStrategy();
   }
 
-  /** Returns {@code true} if app bundle has the store archive feature enabled. */
-  public boolean storeArchiveEnabled() {
-    return getBundleConfig().getOptimizations().hasStoreArchive()
-        && getBundleConfig().getOptimizations().getStoreArchive().getEnabled();
+  /** Returns value of the store archive setting. */
+  public Optional<Boolean> getStoreArchive() {
+    if (getBundleConfig().getOptimizations().hasStoreArchive()) {
+      return Optional.of(getBundleConfig().getOptimizations().getStoreArchive().getEnabled());
+    }
+    if (hasBaseModule()
+        && getBaseModule()
+            .findEntriesUnderPath(BundleModule.RESOURCES_DIRECTORY)
+            .anyMatch(entry -> entry.getPath().equals(ZipPath.create(ARCHIVE_OPT_OUT_XML_PATH)))) {
+      return Optional.of(false);
+    }
+    return Optional.empty();
+  }
+
+  /** Returns {@code true} if bundletool has to generate a LocaleConfig file. */
+  public boolean injectLocaleConfig() {
+    return getBundleConfig().getLocales().getInjectLocaleConfig();
   }
 
   public abstract Builder toBuilder();
 
   static Builder builder() {
-    return new AutoValue_AppBundle.Builder();
-  }
-
-  private static ImmutableList<BundleModule> extractModules(
-      ZipFile bundleFile, BundleConfig bundleConfig) {
-    Map<BundleModuleName, BundleModule.Builder> moduleBuilders = new HashMap<>();
-    Enumeration<? extends ZipEntry> entries = bundleFile.entries();
-    while (entries.hasMoreElements()) {
-      ZipEntry entry = entries.nextElement();
-      if (entry.isDirectory()) {
-        continue;
-      }
-
-      Optional<BundleModuleName> moduleName = extractModuleName(entry);
-      if (!moduleName.isPresent()) {
-        continue;
-      }
-
-      BundleModule.Builder moduleBuilder =
-          moduleBuilders.computeIfAbsent(
-              moduleName.get(),
-              name -> BundleModule.builder().setName(name).setBundleConfig(bundleConfig));
-
-      moduleBuilder.addEntry(
-          ModuleEntry.builder()
-              .setBundleLocation(
-                  ModuleEntryBundleLocation.create(
-                      Paths.get(bundleFile.getName()), ZipPath.create(entry.getName())))
-              .setPath(ZipUtils.convertBundleToModulePath(ZipPath.create(entry.getName())))
-              .setContent(ZipUtils.asByteSource(bundleFile, entry))
-              .build());
-    }
-
-    // We verify the presence of the manifest before building the BundleModule objects because the
-    // manifest is a required field of the BundleModule class.
-    checkModulesHaveManifest(moduleBuilders.values());
-
-    return moduleBuilders.values().stream()
-        .map(BundleModule.Builder::build)
-        .collect(toImmutableList());
-  }
-
-  private static void checkModulesHaveManifest(Collection<BundleModule.Builder> bundleModules) {
-    ImmutableSet<String> modulesWithoutManifest =
-        bundleModules.stream()
-            .filter(bundleModule -> !bundleModule.hasAndroidManifest())
-            .map(module -> module.getName().getName())
-            .collect(toImmutableSet());
-    if (!modulesWithoutManifest.isEmpty()) {
-      throw InvalidBundleException.builder()
-          .withUserMessage(
-              "Found modules in the App Bundle without an AndroidManifest.xml: %s",
-              modulesWithoutManifest)
-          .build();
-    }
-  }
-
-  private static BundleConfig readBundleConfig(ZipFile bundleFile) {
-    ZipEntry bundleConfigEntry = bundleFile.getEntry(BUNDLE_CONFIG_FILE_NAME);
-    if (bundleConfigEntry == null) {
-      throw InvalidBundleException.builder()
-          .withUserMessage("File '%s' was not found.", BUNDLE_CONFIG_FILE_NAME)
-          .build();
-    }
-
-    try {
-      return BundleConfig.parseFrom(ZipUtils.asByteSource(bundleFile, bundleConfigEntry).read());
-    } catch (InvalidProtocolBufferException e) {
-      throw InvalidBundleException.builder()
-          .withCause(e)
-          .withUserMessage("Bundle config '%s' could not be parsed.", BUNDLE_CONFIG_FILE_NAME)
-          .build();
-    } catch (IOException e) {
-      throw new UncheckedIOException(
-          String.format("Error reading file '%s'.", BUNDLE_CONFIG_FILE_NAME), e);
-    }
-  }
-
-  private static BundleMetadata readBundleMetadata(ZipFile bundleFile) {
-    BundleMetadata.Builder metadata = BundleMetadata.builder();
-    ZipUtils.allFileEntries(bundleFile)
-        .filter(entry -> ZipPath.create(entry.getName()).startsWith(METADATA_DIRECTORY))
-        .forEach(
-            zipEntry -> {
-              ZipPath bundlePath = ZipPath.create(zipEntry.getName());
-              // Strip the top-level metadata directory.
-              ZipPath metadataPath = bundlePath.subpath(1, bundlePath.getNameCount());
-              metadata.addFile(metadataPath, ZipUtils.asByteSource(bundleFile, zipEntry));
-            });
-    return metadata.build();
-  }
-
-  @CheckReturnValue
-  private static ImmutableList<BundleModule> sanitize(ImmutableList<BundleModule> modules) {
-    // This is a temporary fix to work around a bug in gradle that creates a file named classes1.dex
-    modules =
-        modules.stream().map(new ClassesDexNameSanitizer()::sanitize).collect(toImmutableList());
-
-    return modules;
+    return new AutoValue_AppBundle.Builder().setRuntimeEnabledSdkDependencies(ImmutableMap.of());
   }
 
   /** Builder for App Bundle object */
@@ -361,6 +297,19 @@ public abstract class AppBundle {
       return this;
     }
 
+    /** Convenience method to add extra modules to the builder. */
+    public Builder addRawModules(Collection<BundleModule> bundleModules) {
+      modulesBuilder()
+          .putAll(
+              bundleModules.stream().collect(toImmutableMap(BundleModule::getName, identity())));
+      return this;
+    }
+
+    public Builder addRawModule(BundleModule bundleModule) {
+      modulesBuilder().put(bundleModule.getName(), bundleModule);
+      return this;
+    }
+
     public abstract Builder setMasterPinnedResourceIds(ImmutableSet<ResourceId> pinnedResourceIds);
 
     public abstract Builder setMasterPinnedResourceNames(ImmutableSet<String> pinnedResourceNames);
@@ -369,6 +318,33 @@ public abstract class AppBundle {
 
     public abstract Builder setBundleMetadata(BundleMetadata bundleMetadata);
 
+    public abstract Builder setRuntimeEnabledSdkDependencies(
+        ImmutableMap<String, RuntimeEnabledSdk> runtimeEnabledSdkDependencies);
+
+    /**
+     * Package name is explicitly set in BuidSdkApksForAppCommand, since it does not take app bundle
+     * as input.
+     */
+    public abstract Builder setPackageNameOptional(String packageName);
+
     public abstract AppBundle build();
+
+    abstract ImmutableMap.Builder<BundleModuleName, BundleModule> modulesBuilder();
+  }
+
+  private static void validateUniqueSdkDependencies(
+      ImmutableListMultimap<String, RuntimeEnabledSdk> runtimeEnabledSdkDependencies) {
+    runtimeEnabledSdkDependencies
+        .keySet()
+        .forEach(
+            sdkPackageName -> {
+              if (runtimeEnabledSdkDependencies.get(sdkPackageName).size() > 1) {
+                throw InvalidBundleException.builder()
+                    .withUserMessage(
+                        "Found multiple dependencies on the same runtime-enabled SDK '%s'.",
+                        sdkPackageName)
+                    .build();
+              }
+            });
   }
 }

@@ -16,14 +16,16 @@
 
 package com.android.tools.build.bundletool.model;
 
+import static com.android.tools.build.bundletool.model.AndroidManifest.SDK_SANDBOX_MIN_VERSION;
 import static com.android.tools.build.bundletool.model.BundleModule.APEX_DIRECTORY;
 import static com.android.tools.build.bundletool.model.BundleModule.ASSETS_DIRECTORY;
 import static com.android.tools.build.bundletool.model.BundleModule.DEX_DIRECTORY;
 import static com.android.tools.build.bundletool.model.BundleModule.LIB_DIRECTORY;
 import static com.android.tools.build.bundletool.model.BundleModule.RESOURCES_DIRECTORY;
 import static com.android.tools.build.bundletool.model.BundleModule.ROOT_DIRECTORY;
-import static com.android.tools.build.bundletool.model.SourceStamp.STAMP_SOURCE_METADATA_KEY;
-import static com.android.tools.build.bundletool.model.SourceStamp.STAMP_TYPE_METADATA_KEY;
+import static com.android.tools.build.bundletool.model.RuntimeEnabledSdkVersionEncoder.encodeSdkMajorAndMinorVersion;
+import static com.android.tools.build.bundletool.model.SourceStampConstants.STAMP_SOURCE_METADATA_KEY;
+import static com.android.tools.build.bundletool.model.SourceStampConstants.STAMP_TYPE_METADATA_KEY;
 import static com.android.tools.build.bundletool.model.utils.ResourcesUtils.SCREEN_DENSITY_TO_PROTO_VALUE_MAP;
 import static com.android.tools.build.bundletool.model.utils.TargetingNormalizer.normalizeApkTargeting;
 import static com.android.tools.build.bundletool.model.utils.TargetingNormalizer.normalizeVariantTargeting;
@@ -31,15 +33,18 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.MoreCollectors.toOptional;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.android.aapt.Resources.ResourceTable;
 import com.android.bundle.Config.ApexEmbeddedApkConfig;
 import com.android.bundle.Files.ApexImages;
 import com.android.bundle.Files.Assets;
 import com.android.bundle.Files.NativeLibraries;
+import com.android.bundle.RuntimeEnabledSdkConfigProto.RuntimeEnabledSdk;
 import com.android.bundle.Targeting.Abi;
 import com.android.bundle.Targeting.AbiTargeting;
 import com.android.bundle.Targeting.ApkTargeting;
+import com.android.bundle.Targeting.CountrySetTargeting;
 import com.android.bundle.Targeting.LanguageTargeting;
 import com.android.bundle.Targeting.MultiAbi;
 import com.android.bundle.Targeting.MultiAbiTargeting;
@@ -49,7 +54,8 @@ import com.android.bundle.Targeting.SanitizerTargeting;
 import com.android.bundle.Targeting.TextureCompressionFormatTargeting;
 import com.android.bundle.Targeting.VariantTargeting;
 import com.android.tools.build.bundletool.model.BundleModule.ModuleType;
-import com.android.tools.build.bundletool.model.SourceStamp.StampType;
+import com.android.tools.build.bundletool.model.SourceStampConstants.StampType;
+import com.android.tools.build.bundletool.model.targeting.TargetedDirectorySegment;
 import com.android.tools.build.bundletool.model.utils.ResourcesUtils;
 import com.google.auto.value.AutoValue;
 import com.google.auto.value.extension.memoized.Memoized;
@@ -57,20 +63,23 @@ import com.google.common.base.Ascii;
 import com.google.common.base.Joiner;
 import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
+import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Multimaps;
+import com.google.common.io.ByteSource;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.errorprone.annotations.CheckReturnValue;
 import com.google.errorprone.annotations.Immutable;
 import java.net.MalformedURLException;
 import java.net.URISyntaxException;
 import java.net.URL;
-import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 import java.util.StringJoiner;
 import java.util.stream.Stream;
-import javax.annotation.CheckReturnValue;
 
 /** A module split is a subset of a bundle module. */
 @Immutable
@@ -87,7 +96,7 @@ public abstract class ModuleSplit {
     SPLIT,
     INSTANT,
     ASSET_SLICE,
-    HIBERNATION,
+    ARCHIVE,
   }
 
   /**
@@ -115,6 +124,8 @@ public abstract class ModuleSplit {
    *     inside the module, as opposed to the original bundle's ZipEntry names.
    */
   public abstract ImmutableList<ModuleEntry> getEntries();
+
+  public abstract boolean getSparseEncoding();
 
   public abstract Optional<ResourceTable> getResourceTable();
 
@@ -213,6 +224,16 @@ public abstract class ModuleSplit {
         .getDeviceTierTargeting()
         .getValueList()
         .forEach(value -> suffixJoiner.add("tier_" + value.getValue()));
+
+    CountrySetTargeting countrySetTargeting = getApkTargeting().getCountrySetTargeting();
+    if (!countrySetTargeting.getValueList().isEmpty()) {
+      countrySetTargeting
+          .getValueList()
+          .forEach(
+              value -> suffixJoiner.add(TargetedDirectorySegment.COUNTRY_SET_KEY + "_" + value));
+    } else if (!countrySetTargeting.getAlternativesList().isEmpty()) {
+      suffixJoiner.add("other_countries");
+    }
 
     return suffixJoiner.toString();
   }
@@ -315,6 +336,96 @@ public abstract class ModuleSplit {
     return toBuilder().setAndroidManifest(modifiedManifest).build();
   }
 
+  /** Writes SDK version code to Android Manifest. */
+  public ModuleSplit writeSdkVersionCode(Integer versionCode) {
+    AndroidManifest apkManifest =
+        getAndroidManifest().toEditor().setVersionCode(versionCode).save();
+    return toBuilder().setAndroidManifest(apkManifest).build();
+  }
+
+  /** Writes SDK version name ("majorVersion.minorVersion.patchVersion") to Android Manifest. */
+  public ModuleSplit writeSdkVersionName(String versionName) {
+    AndroidManifest apkManifest =
+        getAndroidManifest().toEditor().setVersionName(versionName).save();
+    return toBuilder().setAndroidManifest(apkManifest).build();
+  }
+
+  /** Writes the APK package name in the 'package' attribute in the AndroidManifest. */
+  public ModuleSplit writeManifestPackage(String packageName) {
+    AndroidManifest apkManifest = getAndroidManifest().toEditor().setPackage(packageName).save();
+    return toBuilder().setAndroidManifest(apkManifest).build();
+  }
+
+  /** Writes the SDK package name and Android version major to the <sdk-library> element. */
+  public ModuleSplit writeSdkLibraryElement(String packageName, int versionMajor) {
+    AndroidManifest apkManifest =
+        getAndroidManifest().toEditor().setSdkLibraryElement(packageName, versionMajor).save();
+    return toBuilder().setAndroidManifest(apkManifest).build();
+  }
+
+  /**
+   * Overrides minimum SDK version if it is lower than the SDK sandbox minimum version or if it is
+   * not set.
+   */
+  public ModuleSplit overrideMinSdkVersionForSdkSandbox() {
+    if (!getAndroidManifest().getMinSdkVersion().isPresent()
+        || getAndroidManifest().getMinSdkVersion().get() < SDK_SANDBOX_MIN_VERSION) {
+      AndroidManifest apkManifest =
+          getAndroidManifest().toEditor().setMinSdkVersion(SDK_SANDBOX_MIN_VERSION).save();
+      return toBuilder().setAndroidManifest(apkManifest).build();
+    }
+    return this;
+  }
+
+  /** Writes the SDK Patch version to a new <property> element. */
+  public ModuleSplit writePatchVersion(int patchVersion) {
+    AndroidManifest apkManifest =
+        getAndroidManifest().toEditor().setSdkPatchVersionProperty(patchVersion).save();
+    return toBuilder().setAndroidManifest(apkManifest).build();
+  }
+
+  /** Writes the SDK provider class name to a new <property> element. */
+  public ModuleSplit writeSdkProviderClassName(String sdkProviderClassName) {
+    AndroidManifest apkManifest =
+        getAndroidManifest().toEditor().setSdkProviderClassName(sdkProviderClassName).save();
+    return toBuilder().setAndroidManifest(apkManifest).build();
+  }
+
+  /**
+   * Writes the compatibility SDK provider class name to a new <property> element in the manifest,
+   * as well as to a text file under assets/ directory.
+   */
+  public ModuleSplit writeCompatSdkProviderClassName(String sdkProviderClassName) {
+    AndroidManifest apkManifest =
+        getAndroidManifest().toEditor().setCompatSdkProviderClassName(sdkProviderClassName).save();
+    return toBuilder()
+        .setAndroidManifest(apkManifest)
+        // This is a workaround for a platform bug which does not let the compat library parse the
+        // class name from the manifest.
+        .addEntry(
+            ModuleEntry.builder()
+                .setPath(ZipPath.create("assets/SandboxedSdkProviderCompatClassName.txt"))
+                .setContent(ByteSource.wrap(sdkProviderClassName.getBytes(UTF_8)))
+                .build())
+        .build();
+  }
+
+  /**
+   * Adds uses-sdk-library elements that correspond to the given {@link RuntimeEnabledSdk}s to the
+   * manifest.
+   */
+  public ModuleSplit addUsesSdkLibraryElements(
+      ImmutableCollection<RuntimeEnabledSdk> runtimeEnabledSdks) {
+    ManifestEditor manifestEditor = getAndroidManifest().toEditor();
+    runtimeEnabledSdks.forEach(
+        sdk ->
+            manifestEditor.addUsesSdkLibraryElement(
+                sdk.getPackageName(),
+                encodeSdkMajorAndMinorVersion(sdk.getVersionMajor(), sdk.getVersionMinor()),
+                sdk.getCertificateDigest()));
+    return toBuilder().setAndroidManifest(manifestEditor.save()).build();
+  }
+
   private String generateSplitId(String resolvedSuffix) {
     String masterSplitId = getSplitIdForMasterSplit();
     if (isMasterSplit()) {
@@ -340,6 +451,7 @@ public abstract class ModuleSplit {
     return new AutoValue_ModuleSplit.Builder()
         .setEntries(ImmutableList.of())
         .setSplitType(SplitType.SPLIT)
+        .setSparseEncoding(false)
         .setApexEmbeddedApkConfigs(ImmutableList.of());
   }
 
@@ -473,30 +585,29 @@ public abstract class ModuleSplit {
         variantTargeting);
   }
 
-  public static ModuleSplit forHibernation(
+  public static ModuleSplit forArchive(
       BundleModule bundleModule,
-      AndroidManifest hibernatedManifest,
-      Optional<ResourceTable> hibernatedResourceTable,
-      Path hibernatedClassesDexFile) {
-    ModuleSplit.Builder hibernatedSplit =
+      AndroidManifest archivedManifest,
+      ResourceTable archivedResourceTable,
+      ImmutableMap<ZipPath, ByteSource> additionalResourcesByByteSource) {
+    ModuleSplit.Builder archivedSplit =
         ModuleSplit.builder()
             .setModuleName(bundleModule.getName())
-            .setSplitType(SplitType.HIBERNATION)
+            .setSplitType(SplitType.ARCHIVE)
             .setMasterSplit(true)
-            .setAndroidManifest(hibernatedManifest)
+            .setAndroidManifest(archivedManifest)
             .setApkTargeting(ApkTargeting.getDefaultInstance())
             .setVariantTargeting(VariantTargeting.getDefaultInstance());
-    if (hibernatedResourceTable.isPresent()) {
-      hibernatedSplit.setResourceTable(hibernatedResourceTable.get());
-      hibernatedSplit.setEntries(
-          filterResourceEntries(bundleModule.getEntries().asList(), hibernatedResourceTable.get()));
-    }
-    hibernatedSplit.addEntry(
-        ModuleEntry.builder()
-            .setPath(DEX_DIRECTORY.resolve("classes.dex"))
-            .setContent(hibernatedClassesDexFile)
-            .build());
-    return hibernatedSplit.build();
+    archivedSplit.setResourceTable(archivedResourceTable);
+    archivedSplit.setEntries(
+        filterResourceEntries(bundleModule.getEntries().asList(), archivedResourceTable));
+
+    additionalResourcesByByteSource.forEach(
+        (destinationPath, fileContent) ->
+            archivedSplit.addEntry(
+                ModuleEntry.builder().setPath(destinationPath).setContent(fileContent).build()));
+
+    return archivedSplit.build();
   }
 
   /**
@@ -522,9 +633,6 @@ public abstract class ModuleSplit {
             .setMasterSplit(true)
             .setSplitType(getSplitTypeFromModuleType(bundleModule.getModuleType()))
             .setApkTargeting(ApkTargeting.getDefaultInstance())
-            .setApexEmbeddedApkConfigs(
-                ImmutableList.copyOf(
-                    bundleModule.getBundleConfig().getApexConfig().getApexEmbeddedApkConfigList()))
             .setVariantTargeting(variantTargeting);
 
     bundleModule.getNativeConfig().ifPresent(splitBuilder::setNativeConfig);
@@ -533,6 +641,11 @@ public abstract class ModuleSplit {
     if (setResourceTable) {
       bundleModule.getResourceTable().ifPresent(splitBuilder::setResourceTable);
     }
+    if (bundleModule.getBundleApexConfig().isPresent()) {
+      splitBuilder.setApexEmbeddedApkConfigs(
+          ImmutableList.copyOf(
+              bundleModule.getBundleApexConfig().get().getApexEmbeddedApkConfigList()));
+    }
     return splitBuilder.build();
   }
 
@@ -540,9 +653,12 @@ public abstract class ModuleSplit {
     switch (moduleType) {
       case FEATURE_MODULE:
       case ML_MODULE:
+      case SDK_DEPENDENCY_MODULE:
         return SplitType.SPLIT;
       case ASSET_MODULE:
         return SplitType.ASSET_SLICE;
+      case UNKNOWN_MODULE_TYPE:
+        throw new IllegalStateException();
     }
     throw new IllegalStateException();
   }
@@ -605,6 +721,8 @@ public abstract class ModuleSplit {
 
     public abstract Builder setMasterSplit(boolean isMasterSplit);
 
+    public abstract Builder setSparseEncoding(boolean sparseEncoding);
+
     public abstract Builder setNativeConfig(NativeLibraries nativeConfig);
 
     public abstract Builder setAssetsConfig(Assets assetsConfig);
@@ -631,6 +749,7 @@ public abstract class ModuleSplit {
 
     abstract ImmutableList.Builder<ModuleEntry> entriesBuilder();
 
+    @CanIgnoreReturnValue
     public Builder addEntry(ModuleEntry moduleEntry) {
       entriesBuilder().add(moduleEntry);
       return this;
@@ -642,6 +761,7 @@ public abstract class ModuleSplit {
 
     abstract ImmutableList.Builder<ManifestMutator> masterManifestMutatorsBuilder();
 
+    @CanIgnoreReturnValue
     public Builder addMasterManifestMutator(ManifestMutator manifestMutator) {
       masterManifestMutatorsBuilder().add(manifestMutator);
       return this;
@@ -664,10 +784,11 @@ public abstract class ModuleSplit {
                 // was enabled, a default targeting suffix was used.
                 .clearTextureCompressionFormatTargeting()
                 .clearDeviceTierTargeting()
+                .clearCountrySetTargeting()
                 .build()
                 .equals(ApkTargeting.getDefaultInstance()),
             "Master split cannot have any targeting other than SDK version, Texture"
-                + "Compression Format and Device Tier.");
+                + " Compression Format, Device Tier and Country Set.");
       }
       return moduleSplit;
     }

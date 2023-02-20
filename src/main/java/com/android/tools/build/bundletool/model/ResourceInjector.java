@@ -16,13 +16,20 @@
 
 package com.android.tools.build.bundletool.model;
 
+import com.android.aapt.Resources;
+import com.android.aapt.Resources.CompoundValue;
+import com.android.aapt.Resources.ConfigValue;
 import com.android.aapt.Resources.Entry;
 import com.android.aapt.Resources.EntryId;
+import com.android.aapt.Resources.FileReference;
+import com.android.aapt.Resources.Item;
 import com.android.aapt.Resources.Package;
 import com.android.aapt.Resources.PackageId;
 import com.android.aapt.Resources.ResourceTable;
+import com.android.aapt.Resources.Style;
 import com.android.aapt.Resources.Type;
 import com.android.aapt.Resources.TypeId;
+import com.android.aapt.Resources.Value;
 import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
 import java.util.List;
 
@@ -40,11 +47,15 @@ import java.util.List;
 public class ResourceInjector {
 
   private static final int BASE_RESOURCE_TABLE_PACKAGE_ID = 0x7f;
+  private static final String STRING_ENTRY_TYPE = "string";
+  private static final String DRAWABLE_ENTRY_TYPE = "drawable";
+  private static final String LAYOUT_ENTRY_TYPE = "layout";
+  private static final String STYLE_ENTRY_TYPE = "style";
 
   private final ResourceTable.Builder resourceTable;
   private final String packageName;
 
-  ResourceInjector(ResourceTable.Builder resourceTable, String packageName) {
+  public ResourceInjector(ResourceTable.Builder resourceTable, String packageName) {
     this.resourceTable = resourceTable;
     this.packageName = packageName;
   }
@@ -56,6 +67,70 @@ public class ResourceInjector {
             .map(ResourceTable::toBuilder)
             .orElseGet(ResourceTable::newBuilder),
         moduleSplit.getAndroidManifest().getPackageName());
+  }
+
+  public ResourceId addStringResource(String name, String value) {
+    Entry resourceEntry =
+        Entry.newBuilder()
+            .setName(name)
+            .addConfigValue(
+                ConfigValue.newBuilder()
+                    .setValue(
+                        Value.newBuilder()
+                            .setItem(
+                                Item.newBuilder()
+                                    .setStr(Resources.String.newBuilder().setValue(value)))))
+            .build();
+    return addResource(STRING_ENTRY_TYPE, resourceEntry);
+  }
+
+  public ResourceId addXmlDrawableResource(String drawableName, String fileReference) {
+    Entry drawableEntity =
+        Entry.newBuilder()
+            .setName(drawableName)
+            .addConfigValue(
+                ConfigValue.newBuilder()
+                    .setValue(
+                        Value.newBuilder()
+                            .setItem(
+                                Item.newBuilder()
+                                    .setFile(
+                                        FileReference.newBuilder()
+                                            .setPath(fileReference)
+                                            .setType(FileReference.Type.PROTO_XML)))))
+            .build();
+    return addResource(DRAWABLE_ENTRY_TYPE, drawableEntity);
+  }
+
+  public ResourceId addLayoutResource(String layoutName, String fileReference) {
+    Entry layoutEntry =
+        Entry.newBuilder()
+            .setName(layoutName)
+            .addConfigValue(
+                ConfigValue.newBuilder()
+                    .setValue(
+                        Value.newBuilder()
+                            .setItem(
+                                Item.newBuilder()
+                                    .setFile(
+                                        FileReference.newBuilder()
+                                            .setPath(fileReference)
+                                            .setType(FileReference.Type.PROTO_XML)))))
+            .build();
+    return addResource(LAYOUT_ENTRY_TYPE, layoutEntry);
+  }
+
+  public ResourceId addStyleResource(String styleName, Style style) {
+    Entry layoutEntry =
+        Entry.newBuilder()
+            .setName(styleName)
+            .addConfigValue(
+                ConfigValue.newBuilder()
+                    .setValue(
+                        Value.newBuilder()
+                            .setCompoundValue(CompoundValue.newBuilder().setStyle(style))))
+            .build();
+    return addResource(STYLE_ENTRY_TYPE, layoutEntry);
   }
 
   public ResourceId addResource(String entryType, Entry entry) {

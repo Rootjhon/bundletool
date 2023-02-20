@@ -22,9 +22,9 @@ import com.android.tools.build.bundletool.model.exceptions.CommandExecutionExcep
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.Immutable;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyStore;
 import java.security.KeyStore.PasswordProtection;
@@ -65,7 +65,27 @@ public abstract class SignerConfig {
     /** Sets the certificate corresponding to the private key. */
     public abstract Builder setCertificates(ImmutableList<X509Certificate> certificates);
 
-    public abstract SignerConfig build();
+    abstract SignerConfig autoBuild();
+
+    @SuppressWarnings("CheckReturnValue")
+    public SignerConfig build() {
+      SignerConfig result = autoBuild();
+      // Initialize issuerX500Principal and calls getEncoded here because implementation of
+      // getIssuerX500Principal and getEncoded are not thread-safe in JDK and we use it from
+      // multiple threads.
+      result
+          .getCertificates()
+          .forEach(
+              cert -> {
+                if (cert.getIssuerX500Principal() != null) {
+                  cert.getIssuerX500Principal().getEncoded();
+                }
+                if (cert.getPublicKey() != null) {
+                  cert.getPublicKey().getEncoded();
+                }
+              });
+      return result;
+    }
   }
 
   /**
@@ -98,7 +118,7 @@ public abstract class SignerConfig {
 
     PasswordProtection keystorePassword = null;
     PasswordProtection keyPassword = null;
-    try (InputStream keystoreInputStream = new FileInputStream(keystorePath.toFile())) {
+    try (InputStream keystoreInputStream = Files.newInputStream(keystorePath)) {
       // 1. Prompt for the keystore password if it wasn't provided.
       keystorePassword =
           optionalKeystorePassword

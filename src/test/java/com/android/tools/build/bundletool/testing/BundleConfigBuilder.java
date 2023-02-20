@@ -18,11 +18,16 @@ package com.android.tools.build.bundletool.testing;
 
 import com.android.bundle.Config.BundleConfig;
 import com.android.bundle.Config.Bundletool;
+import com.android.bundle.Config.Optimizations;
+import com.android.bundle.Config.ResourceOptimizations;
+import com.android.bundle.Config.ResourceOptimizations.SparseEncoding;
 import com.android.bundle.Config.SplitDimension;
 import com.android.bundle.Config.StandaloneConfig.DexMergingStrategy;
 import com.android.bundle.Config.SuffixStripping;
+import com.android.bundle.Config.UncompressDexFiles.UncompressedDexTargetSdk;
 import com.android.bundle.Config.UnsignedEmbeddedApkConfig;
 import com.android.tools.build.bundletool.model.version.BundleToolVersion;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 
 /** Helper to create {@link BundleConfig} instances in tests. */
 public class BundleConfigBuilder {
@@ -82,8 +87,34 @@ public class BundleConfigBuilder {
     return this;
   }
 
+  @CanIgnoreReturnValue
+  public BundleConfigBuilder setUncompressDexFilesForVariant(
+      UncompressedDexTargetSdk uncompressedDexTargetSdk) {
+    builder
+        .getOptimizationsBuilder()
+        .getUncompressDexFilesBuilder()
+        .setUncompressedDexTargetSdk(uncompressedDexTargetSdk);
+    return this;
+  }
+
+  public BundleConfigBuilder setSparseEncodingForSdk32() {
+    builder.setOptimizations(
+        Optimizations.newBuilder()
+            .setResourceOptimizations(
+                ResourceOptimizations.newBuilder()
+                    .setSparseEncoding(SparseEncoding.VARIANT_FOR_SDK_32)
+                    .build())
+            .build());
+    return this;
+  }
+
   public BundleConfigBuilder setStoreArchive(boolean enabled) {
     builder.getOptimizationsBuilder().getStoreArchiveBuilder().setEnabled(enabled);
+    return this;
+  }
+
+  public BundleConfigBuilder setInjectLocaleConfig(boolean enabled) {
+    builder.getLocalesBuilder().setInjectLocaleConfig(enabled);
     return this;
   }
 

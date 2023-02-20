@@ -20,7 +20,11 @@ import static com.android.tools.build.bundletool.model.utils.TargetingProtoUtils
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.common.collect.MoreCollectors.toOptional;
 
+import com.android.bundle.Files.ApexImages;
+import com.android.bundle.Files.Assets;
+import com.android.bundle.Files.NativeLibraries;
 import com.android.bundle.Targeting.ApkTargeting;
 import com.android.bundle.Targeting.AssetsDirectoryTargeting;
 import com.android.bundle.Targeting.SdkVersion;
@@ -61,6 +65,9 @@ public final class TargetingUtils {
     }
     if (targeting.hasDeviceTier()) {
       dimensions.add(TargetingDimension.DEVICE_TIER);
+    }
+    if (targeting.hasCountrySet()) {
+      dimensions.add(TargetingDimension.COUNTRY_SET);
     }
     return dimensions.build();
   }
@@ -256,10 +263,102 @@ public final class TargetingUtils {
   public static ImmutableSet<Integer> extractDeviceTiers(
       ImmutableSet<TargetedDirectory> targetedDirectories) {
     return targetedDirectories.stream()
-        .map(directory -> directory.getTargeting(TargetingDimension.DEVICE_TIER))
+        .map(TargetingUtils::extractDeviceTier)
         .flatMap(Streams::stream)
-        .flatMap(targeting -> targeting.getDeviceTier().getValueList().stream())
-        .map(Int32Value::getValue)
         .collect(toImmutableSet());
+  }
+
+  public static Optional<Integer> extractDeviceTier(TargetedDirectory targetedDirectory) {
+    return targetedDirectory
+        .getTargeting(TargetingDimension.DEVICE_TIER)
+        .flatMap(
+            targeting ->
+                targeting.getDeviceTier().getValueList().stream()
+                    .map(Int32Value::getValue)
+                    .collect(toOptional()));
+  }
+
+  /**
+   * Extracts all the country sets used in the targeted directories.
+   *
+   * <p>This is only useful when BundleModule assets config is not yet generated (which is the case
+   * when validators are run). Prefer using {@link BundleModule#getAssetsConfig} for all other
+   * cases.
+   */
+  public static ImmutableSet<String> extractCountrySets(
+      ImmutableSet<TargetedDirectory> targetedDirectories) {
+    return targetedDirectories.stream()
+        .map(TargetingUtils::extractCountrySet)
+        .flatMap(Streams::stream)
+        .collect(toImmutableSet());
+  }
+
+  public static Optional<Assets> generateAssetsTargeting(BundleModule module) {
+    ImmutableList<ZipPath> assetDirectories =
+        module
+            .findEntriesUnderPath(BundleModule.ASSETS_DIRECTORY)
+            .map(ModuleEntry::getPath)
+            .filter(path -> path.getNameCount() > 1)
+            .map(ZipPath::getParent)
+            .distinct()
+            .collect(toImmutableList());
+
+    if (assetDirectories.isEmpty()) {
+      return Optional.empty();
+    }
+
+    return Optional.of(new TargetingGenerator().generateTargetingForAssets(assetDirectories));
+  }
+
+  public static Optional<NativeLibraries> generateNativeLibrariesTargeting(BundleModule module) {
+    // Validation ensures that files under "lib/" conform to pattern "lib/<abi-dir>/file.so".
+    // We extract the distinct "lib/<abi-dir>" directories.
+    ImmutableList<String> libAbiDirs =
+        module
+            .findEntriesUnderPath(BundleModule.LIB_DIRECTORY)
+            .map(ModuleEntry::getPath)
+            .filter(path -> path.getNameCount() > 2)
+            .map(path -> path.subpath(0, 2))
+            .map(ZipPath::toString)
+            .distinct()
+            .collect(toImmutableList());
+
+    if (libAbiDirs.isEmpty()) {
+      return Optional.empty();
+    }
+
+    return Optional.of(new TargetingGenerator().generateTargetingForNativeLibraries(libAbiDirs));
+  }
+
+  public static Optional<ApexImages> generateApexImagesTargeting(BundleModule module) {
+    // Validation ensures that image files under "apex/" conform to the pattern
+    // "apex/<abi1>.<abi2>...<abiN>.img".
+    ImmutableList<ZipPath> apexImageFiles =
+        module
+            .findEntriesUnderPath(BundleModule.APEX_DIRECTORY)
+            .map(ModuleEntry::getPath)
+            .filter(p -> p.toString().endsWith(BundleModule.APEX_IMAGE_SUFFIX))
+            .collect(toImmutableList());
+
+    // Validation ensures if build info is present then we have one per image.
+    boolean hasBuildInfo =
+        module
+            .findEntriesUnderPath(BundleModule.APEX_DIRECTORY)
+            .map(ModuleEntry::getPath)
+            .anyMatch(p -> p.toString().endsWith(BundleModule.BUILD_INFO_SUFFIX));
+
+    if (apexImageFiles.isEmpty()) {
+      return Optional.empty();
+    }
+
+    return Optional.of(
+        new TargetingGenerator().generateTargetingForApexImages(apexImageFiles, hasBuildInfo));
+  }
+
+  private static Optional<String> extractCountrySet(TargetedDirectory targetedDirectory) {
+    return targetedDirectory
+        .getTargeting(TargetingDimension.COUNTRY_SET)
+        .flatMap(
+            targeting -> targeting.getCountrySet().getValueList().stream().collect(toOptional()));
   }
 }

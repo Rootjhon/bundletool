@@ -28,7 +28,9 @@ public class AppBundleValidator {
   @VisibleForTesting
   static final ImmutableList<SubValidator> DEFAULT_BUNDLE_FILE_SUB_VALIDATORS =
       // Keep order of common validators in sync with BundleModulesValidator.
-      ImmutableList.of(new BundleZipValidator(), new MandatoryFilesPresenceValidator());
+      ImmutableList.of(
+          new BundleZipValidator(),
+          new MandatoryFilesPresenceValidator(AppBundle.NON_MODULE_DIRECTORIES));
 
   /** Validators run on the internal representation of bundle and bundle modules. */
   @VisibleForTesting
@@ -45,6 +47,7 @@ public class AppBundleValidator {
           new AbiParityValidator(),
           new TextureCompressionFormatParityValidator(),
           new DeviceTierParityValidator(),
+          new CountrySetParityValidator(),
           new DexFilesValidator(),
           new ApexBundleValidator(),
           new AssetBundleValidator(),
@@ -52,11 +55,13 @@ public class AppBundleValidator {
           new AssetsTargetingValidator(),
           new NativeTargetingValidator(),
           // Other.
+          new ArchiveEntriesValidator(),
           new ModuleDependencyValidator(),
           new ModuleTitleValidator(),
           new ResourceTableValidator(),
           new AssetModuleFilesValidator(),
-          new CodeTransparencyValidator());
+          new CodeTransparencyValidator(),
+          new RuntimeEnabledSdkConfigValidator());
 
   private final ImmutableList<SubValidator> allBundleSubValidators;
   private final ImmutableList<SubValidator> allBundleFileSubValidators;

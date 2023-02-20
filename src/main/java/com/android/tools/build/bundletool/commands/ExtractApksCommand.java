@@ -42,6 +42,7 @@ import com.android.tools.build.bundletool.device.ApkMatcher.GeneratedApk;
 import com.android.tools.build.bundletool.device.DeviceSpecParser;
 import com.android.tools.build.bundletool.flags.Flag;
 import com.android.tools.build.bundletool.flags.ParsedFlags;
+import com.android.tools.build.bundletool.model.AndroidManifest;
 import com.android.tools.build.bundletool.model.exceptions.IncompatibleDeviceException;
 import com.android.tools.build.bundletool.model.exceptions.InvalidCommandException;
 import com.android.tools.build.bundletool.model.utils.FileNames;
@@ -53,6 +54,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.io.ByteStreams;
 import com.google.protobuf.Int32Value;
+import com.google.protobuf.StringValue;
 import com.google.protobuf.util.JsonFormat;
 import java.io.IOException;
 import java.io.InputStream;
@@ -93,6 +95,8 @@ public abstract class ExtractApksCommand {
 
   public abstract Optional<ImmutableSet<String>> getModules();
 
+  public abstract boolean getIncludeInstallTimeAssetModules();
+
   /** Gets whether instant APKs should be extracted. */
   public abstract boolean getInstant();
 
@@ -102,7 +106,8 @@ public abstract class ExtractApksCommand {
   public static Builder builder() {
     return new AutoValue_ExtractApksCommand.Builder()
         .setInstant(false)
-        .setIncludeMetadata(false);
+        .setIncludeMetadata(false)
+        .setIncludeInstallTimeAssetModules(true);
   }
 
   /** Builder for the {@link ExtractApksCommand}. */
@@ -118,7 +123,19 @@ public abstract class ExtractApksCommand {
 
     public abstract Builder setOutputDirectory(Path outputDirectory);
 
+    /**
+     * Sets the required modules to extract.
+     *
+     * <p>All install-time feature modules and asset modules are extracted by default. You can
+     * exclude install-time asset modules by passing {@code false} to {@link
+     * #setIncludeInstallTimeAssetModules}.
+     *
+     * <p>"_ALL_" extracts all modules.
+     */
     public abstract Builder setModules(ImmutableSet<String> modules);
+
+    /** Whether to extract install-time asset modules (default = true). */
+    public abstract Builder setIncludeInstallTimeAssetModules(boolean shouldInclude);
 
     /**
      * Sets whether instant APKs should be extracted.
@@ -194,6 +211,7 @@ public abstract class ExtractApksCommand {
         new ApkMatcher(
             deviceSpec,
             requestedModuleNames,
+            getIncludeInstallTimeAssetModules(),
             getInstant(),
             /* ensureDensityAndAbiApksMatched= */ true);
     ImmutableList<GeneratedApk> generatedApks = apkMatcher.getMatchingApks(toc);
@@ -333,21 +351,40 @@ public abstract class ExtractApksCommand {
   }
 
   private static DeviceSpec applyDefaultsToDeviceSpec(DeviceSpec deviceSpec, BuildApksResult toc) {
-    if (deviceSpec.hasDeviceTier()) {
-      return deviceSpec;
+    DeviceSpec.Builder builder = deviceSpec.toBuilder();
+    if (!deviceSpec.hasDeviceTier()) {
+      int defaultDeviceTier =
+          toc.getDefaultTargetingValueList().stream()
+              .filter(
+                  defaultTargetingValue ->
+                      defaultTargetingValue.getDimension().equals(Value.DEVICE_TIER))
+              .map(DefaultTargetingValue::getDefaultValue)
+              // Don't fail if the default value is empty.
+              .filter(defaultValue -> !defaultValue.isEmpty())
+              .map(Integer::parseInt)
+              .collect(toOptional())
+              .orElse(0);
+      builder.setDeviceTier(Int32Value.of(defaultDeviceTier));
     }
-    int defaultDeviceTier =
-        toc.getDefaultTargetingValueList().stream()
-            .filter(
-                defaultTargetingValue ->
-                    defaultTargetingValue.getDimension().equals(Value.DEVICE_TIER))
-            .map(DefaultTargetingValue::getDefaultValue)
-            // Don't fail if the default value is empty.
-            .filter(defaultValue -> !defaultValue.isEmpty())
-            .map(Integer::parseInt)
-            .collect(toOptional())
-            .orElse(0);
-    return deviceSpec.toBuilder().setDeviceTier(Int32Value.of(defaultDeviceTier)).build();
+    if (!deviceSpec.hasCountrySet()) {
+      String defaultCountrySet =
+          toc.getDefaultTargetingValueList().stream()
+              .filter(
+                  defaultTargetingValue ->
+                      defaultTargetingValue.getDimension().equals(Value.COUNTRY_SET))
+              .map(DefaultTargetingValue::getDefaultValue)
+              .filter(defaultValue -> !defaultValue.isEmpty())
+              .collect(toOptional())
+              .orElse("");
+      builder.setCountrySet(StringValue.of(defaultCountrySet));
+    }
+    if (!deviceSpec.hasSdkRuntime()) {
+      builder
+          .getSdkRuntimeBuilder()
+          .setSupported(deviceSpec.getSdkVersion() >= AndroidManifest.SDK_SANDBOX_MIN_VERSION);
+    }
+
+    return builder.build();
   }
 
   public static CommandHelp help() {
@@ -363,8 +400,9 @@ public abstract class ExtractApksCommand {
                 .setFlagName(APKS_ARCHIVE_FILE_FLAG.getName())
                 .setExampleValue("archive.apks")
                 .setDescription(
-                    "Path to the archive file generated by the '%s' command.",
-                    BuildApksCommand.COMMAND_NAME)
+                    "Path to the archive file generated by either the '%s' command or the '%s'"
+                        + " command.",
+                    BuildApksCommand.COMMAND_NAME, BuildSdkApksCommand.COMMAND_NAME)
                 .build())
         .addFlag(
             FlagDescription.builder()

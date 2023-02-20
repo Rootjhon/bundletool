@@ -22,6 +22,7 @@ import static com.android.tools.build.bundletool.testing.CodeTransparencyTestUti
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withMinSdkVersion;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withSharedUserId;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth8.assertThat;
 import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
@@ -31,12 +32,17 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import com.android.aapt.Resources.XmlNode;
 import com.android.bundle.CodeTransparencyOuterClass.CodeRelatedFile;
 import com.android.bundle.CodeTransparencyOuterClass.CodeTransparency;
+import com.android.bundle.Config.BundleConfig;
+import com.android.bundle.Config.Bundletool;
+import com.android.bundle.Config.Optimizations;
+import com.android.bundle.Config.StoreArchive;
 import com.android.tools.build.bundletool.commands.AddTransparencyCommand.DexMergingChoice;
 import com.android.tools.build.bundletool.commands.AddTransparencyCommand.Mode;
 import com.android.tools.build.bundletool.flags.Flag.RequiredFlagNotSetException;
 import com.android.tools.build.bundletool.flags.FlagParser;
 import com.android.tools.build.bundletool.flags.ParsedFlags.UnknownFlagsException;
 import com.android.tools.build.bundletool.io.AppBundleSerializer;
+import com.android.tools.build.bundletool.io.ResourceReader;
 import com.android.tools.build.bundletool.model.AppBundle;
 import com.android.tools.build.bundletool.model.BundleMetadata;
 import com.android.tools.build.bundletool.model.BundleModule;
@@ -45,9 +51,12 @@ import com.android.tools.build.bundletool.model.SignerConfig;
 import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
 import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.android.tools.build.bundletool.model.exceptions.InvalidCommandException;
+import com.android.tools.build.bundletool.model.version.BundleToolVersion;
+import com.android.tools.build.bundletool.model.version.Version;
 import com.android.tools.build.bundletool.testing.AppBundleBuilder;
 import com.android.tools.build.bundletool.testing.BundleModuleBuilder;
 import com.android.tools.build.bundletool.testing.CertificateFactory;
+import com.android.tools.build.bundletool.testing.CodeRelatedFileBuilderHelper;
 import com.android.tools.build.bundletool.transparency.CodeTransparencyFactory;
 import com.android.tools.build.bundletool.transparency.CodeTransparencyVersion;
 import com.google.common.base.Splitter;
@@ -59,6 +68,7 @@ import com.google.common.io.CharSource;
 import com.google.protobuf.util.JsonFormat;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.math.BigInteger;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -68,9 +78,21 @@ import java.security.KeyStore;
 import java.security.PrivateKey;
 import java.security.Signature;
 import java.security.cert.Certificate;
+import java.security.cert.X509Certificate;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Date;
 import java.util.List;
 import java.util.Optional;
 import java.util.zip.ZipFile;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x509.BasicConstraints;
+import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.cert.X509CertificateHolder;
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
+import org.bouncycastle.operator.ContentSigner;
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.jose4j.jws.JsonWebSignature;
 import org.junit.Before;
 import org.junit.Rule;
@@ -302,7 +324,7 @@ public final class AddTransparencyCommandTest {
             .setMode(Mode.GENERATE_CODE_TRANSPARENCY_FILE)
             .setBundlePath(bundlePath)
             .setOutputPath(outputUnsignedTransparencyFilePath)
-            .setTransparencyKeyCertificate(signerConfig.getCertificates().get(0))
+            .setTransparencyKeyCertificates(signerConfig.getCertificates())
             .build();
 
     assertThat(commandViaBuilder).isEqualTo(commandViaFlags);
@@ -359,7 +381,7 @@ public final class AddTransparencyCommandTest {
             .setBundlePath(bundlePath)
             .setOutputPath(outputBundlePath)
             .setTransparencySignaturePath(transparencySignatureFilePath)
-            .setTransparencyKeyCertificate(signerConfig.getCertificates().get(0))
+            .setTransparencyKeyCertificates(signerConfig.getCertificates())
             .build();
 
     assertThat(commandViaBuilder).isEqualTo(commandViaFlags);
@@ -484,7 +506,7 @@ public final class AddTransparencyCommandTest {
   }
 
   @Test
-  public void execute_defaultMode_sharedUserIdSpecifiedInManifest() throws Exception {
+  public void execute_defaultMode_hasSharedUserId_denySharedUserId_fail() throws Exception {
     createBundle(bundlePath, /* hasSharedUserId= */ true);
     AddTransparencyCommand addTransparencyCommand =
         AddTransparencyCommand.builder()
@@ -499,7 +521,41 @@ public final class AddTransparencyCommandTest {
         .hasMessageThat()
         .isEqualTo(
             "Transparency can not be added because `sharedUserId` attribute is specified in one of"
-                + " the manifests.");
+                + " the manifests and `allow-shared-user-id` flag is either false or not specified"
+                + " explicitly.");
+  }
+
+  @Test
+  public void execute_defaultMode_hasSharedUserId_allowSharedUserId_success() throws Exception {
+    createBundle(bundlePath, /* hasSharedUserId= */ true);
+    AddTransparencyCommand addTransparencyCommand =
+        AddTransparencyCommand.builder()
+            .setMode(Mode.DEFAULT)
+            .setBundlePath(bundlePath)
+            .setOutputPath(outputBundlePath)
+            .setSignerConfig(signerConfig)
+            .setAllowSharedUserId(true)
+            .build();
+
+    addTransparencyCommand.execute();
+
+    AppBundle outputBundle = AppBundle.buildFromZip(new ZipFile(outputBundlePath.toFile()));
+    Optional<ByteSource> signedTransparencyFile =
+        outputBundle
+            .getBundleMetadata()
+            .getFileAsByteSource(
+                BUNDLETOOL_NAMESPACE, BundleMetadata.TRANSPARENCY_SIGNED_FILE_NAME);
+    assertThat(signedTransparencyFile).isPresent();
+    JsonWebSignature jws =
+        (JsonWebSignature)
+            JsonWebSignature.fromCompactSerialization(
+                signedTransparencyFile.get().asCharSource(Charset.defaultCharset()).read());
+    assertThat(jws.getAlgorithmHeaderValue()).isEqualTo(RSA_USING_SHA256);
+    assertThat(jws.getCertificateChainHeaderValue()).isEqualTo(signerConfig.getCertificates());
+    // jws.getPayload method will do signature verification using the public key set below.
+    jws.setKey(signerConfig.getCertificates().get(0).getPublicKey());
+    CodeTransparency transparencyProto = getTransparencyProto(jws.getPayload());
+    assertThat(transparencyProto).isEqualTo(expectedTransparencyProto(outputBundle));
   }
 
   @Test
@@ -567,7 +623,42 @@ public final class AddTransparencyCommandTest {
     // jws.getPayload method will do signature verification using the public key set below.
     jws.setKey(signerConfig.getCertificates().get(0).getPublicKey());
     CodeTransparency transparencyProto = getTransparencyProto(jws.getPayload());
-    assertThat(transparencyProto).isEqualTo(expectedTransparencyProto());
+    assertThat(transparencyProto).isEqualTo(expectedTransparencyProto(outputBundle));
+  }
+
+  @Test
+  public void execute_defaultMode_success_certificateChain() throws Exception {
+    createBundle(bundlePath);
+    SignerConfig signerConfigWithChain = createSignerConfigCertificateChain();
+
+    AddTransparencyCommand addTransparencyCommand =
+        AddTransparencyCommand.builder()
+            .setMode(Mode.DEFAULT)
+            .setBundlePath(bundlePath)
+            .setOutputPath(outputBundlePath)
+            .setSignerConfig(signerConfigWithChain)
+            .build();
+
+    addTransparencyCommand.execute();
+
+    AppBundle outputBundle = AppBundle.buildFromZip(new ZipFile(outputBundlePath.toFile()));
+    Optional<ByteSource> signedTransparencyFile =
+        outputBundle
+            .getBundleMetadata()
+            .getFileAsByteSource(
+                BUNDLETOOL_NAMESPACE, BundleMetadata.TRANSPARENCY_SIGNED_FILE_NAME);
+    assertThat(signedTransparencyFile).isPresent();
+    JsonWebSignature jws =
+        (JsonWebSignature)
+            JsonWebSignature.fromCompactSerialization(
+                signedTransparencyFile.get().asCharSource(Charset.defaultCharset()).read());
+    assertThat(jws.getAlgorithmHeaderValue()).isEqualTo(RSA_USING_SHA256);
+    assertThat(jws.getCertificateChainHeaderValue())
+        .isEqualTo(signerConfigWithChain.getCertificates());
+    // jws.getPayload method will do signature verification using the public key set below.
+    jws.setKey(signerConfigWithChain.getCertificates().get(0).getPublicKey());
+    CodeTransparency transparencyProto = getTransparencyProto(jws.getPayload());
+    assertThat(transparencyProto).isEqualTo(expectedTransparencyProto(outputBundle));
   }
 
   @Test
@@ -611,6 +702,254 @@ public final class AddTransparencyCommandTest {
   }
 
   @Test
+  public void
+      execute_defaultMode_archiveEnabled_0_0_0_version_archiveDexPresentInCodeTransparency_oldBundleToolVersion()
+          throws Exception {
+    Version bundleToolVersion = Version.of("1.7.0");
+    createBundle(
+        bundlePath,
+        BundleConfig.newBuilder()
+            .setBundletool(Bundletool.newBuilder().setVersion(bundleToolVersion.toString()).build())
+            .build(),
+        /* optOutArchiveWithXml= */ false);
+    AddTransparencyCommand addTransparencyCommand =
+        AddTransparencyCommand.builder()
+            .setMode(Mode.DEFAULT)
+            .setBundlePath(bundlePath)
+            .setOutputPath(outputBundlePath)
+            .setSignerConfig(signerConfig)
+            .build();
+
+    addTransparencyCommand.execute();
+
+    AppBundle outputBundle = AppBundle.buildFromZip(new ZipFile(outputBundlePath.toFile()));
+    Optional<ByteSource> signedTransparencyFile =
+        outputBundle
+            .getBundleMetadata()
+            .getFileAsByteSource(
+                BUNDLETOOL_NAMESPACE, BundleMetadata.TRANSPARENCY_SIGNED_FILE_NAME);
+    assertThat(signedTransparencyFile).isPresent();
+    JsonWebSignature jws =
+        (JsonWebSignature)
+            JsonWebSignature.fromCompactSerialization(
+                signedTransparencyFile.get().asCharSource(Charset.defaultCharset()).read());
+    jws.setKey(signerConfig.getCertificates().get(0).getPublicKey());
+    CodeTransparency transparencyProto = getTransparencyProto(jws.getPayload());
+    ImmutableList<CodeRelatedFile> archivedDexCodeRelatedFiles =
+        transparencyProto.getCodeRelatedFileList().stream()
+            .filter(CodeRelatedFile::hasBundletoolRepoPath)
+            .collect(toImmutableList());
+    String bundletoolRepoPath = "/com/android/tools/build/bundletool/archive/dex/0_0_0/classes.dex";
+    CodeRelatedFile codeRelatedFile =
+        CodeRelatedFile.newBuilder()
+            .setType(CodeRelatedFile.Type.DEX)
+            .setBundletoolRepoPath(bundletoolRepoPath)
+            .setSha256(
+                new ResourceReader()
+                    .getResourceByteSource(bundletoolRepoPath)
+                    .hash(Hashing.sha256())
+                    .toString())
+            .build();
+    assertThat(archivedDexCodeRelatedFiles).containsExactly(codeRelatedFile);
+  }
+
+  @Test
+  public void execute_defaultMode_archiveEnabled_0_0_0_version_archiveDexPresentInCodeTransparency()
+      throws Exception {
+    Version bundleToolVersion = Version.of("1.8.2");
+    createBundle(
+        bundlePath,
+        BundleConfig.newBuilder()
+            .setBundletool(Bundletool.newBuilder().setVersion(bundleToolVersion.toString()).build())
+            .build(),
+        /* optOutArchiveWithXml= */ false);
+    AddTransparencyCommand addTransparencyCommand =
+        AddTransparencyCommand.builder()
+            .setMode(Mode.DEFAULT)
+            .setBundlePath(bundlePath)
+            .setOutputPath(outputBundlePath)
+            .setSignerConfig(signerConfig)
+            .build();
+
+    addTransparencyCommand.execute();
+
+    AppBundle outputBundle = AppBundle.buildFromZip(new ZipFile(outputBundlePath.toFile()));
+    Optional<ByteSource> signedTransparencyFile =
+        outputBundle
+            .getBundleMetadata()
+            .getFileAsByteSource(
+                BUNDLETOOL_NAMESPACE, BundleMetadata.TRANSPARENCY_SIGNED_FILE_NAME);
+    assertThat(signedTransparencyFile).isPresent();
+    JsonWebSignature jws =
+        (JsonWebSignature)
+            JsonWebSignature.fromCompactSerialization(
+                signedTransparencyFile.get().asCharSource(Charset.defaultCharset()).read());
+    jws.setKey(signerConfig.getCertificates().get(0).getPublicKey());
+    CodeTransparency transparencyProto = getTransparencyProto(jws.getPayload());
+    ImmutableList<CodeRelatedFile> archivedDexCodeRelatedFiles =
+        transparencyProto.getCodeRelatedFileList().stream()
+            .filter(CodeRelatedFile::hasBundletoolRepoPath)
+            .collect(toImmutableList());
+    String bundletoolRepoPath = "/com/android/tools/build/bundletool/archive/dex/0_0_0/classes.dex";
+    CodeRelatedFile codeRelatedFile =
+        CodeRelatedFile.newBuilder()
+            .setType(CodeRelatedFile.Type.DEX)
+            .setBundletoolRepoPath(bundletoolRepoPath)
+            .setSha256(
+                new ResourceReader()
+                    .getResourceByteSource(bundletoolRepoPath)
+                    .hash(Hashing.sha256())
+                    .toString())
+            .build();
+    assertThat(archivedDexCodeRelatedFiles).containsExactly(codeRelatedFile);
+  }
+
+  @Test
+  public void
+      execute_defaultMode_archiveEnabled_1_13_0_version_archiveDexPresentInCodeTransparency()
+          throws Exception {
+    Version bundleToolVersion = Version.of("1.13.0");
+    createBundle(
+        bundlePath,
+        BundleConfig.newBuilder()
+            .setBundletool(Bundletool.newBuilder().setVersion(bundleToolVersion.toString()).build())
+            .build(),
+        /* optOutArchiveWithXml= */ false);
+    AddTransparencyCommand addTransparencyCommand =
+        AddTransparencyCommand.builder()
+            .setMode(Mode.DEFAULT)
+            .setBundlePath(bundlePath)
+            .setOutputPath(outputBundlePath)
+            .setSignerConfig(signerConfig)
+            .build();
+
+    addTransparencyCommand.execute();
+
+    AppBundle outputBundle = AppBundle.buildFromZip(new ZipFile(outputBundlePath.toFile()));
+    Optional<ByteSource> signedTransparencyFile =
+        outputBundle
+            .getBundleMetadata()
+            .getFileAsByteSource(
+                BUNDLETOOL_NAMESPACE, BundleMetadata.TRANSPARENCY_SIGNED_FILE_NAME);
+    assertThat(signedTransparencyFile).isPresent();
+    JsonWebSignature jws =
+        (JsonWebSignature)
+            JsonWebSignature.fromCompactSerialization(
+                signedTransparencyFile.get().asCharSource(Charset.defaultCharset()).read());
+    assertThat(jws.getAlgorithmHeaderValue()).isEqualTo(RSA_USING_SHA256);
+    assertThat(jws.getCertificateChainHeaderValue()).isEqualTo(signerConfig.getCertificates());
+    // jws.getPayload method will do signature verification using the public key set below.
+    jws.setKey(signerConfig.getCertificates().get(0).getPublicKey());
+    CodeTransparency transparencyProto = getTransparencyProto(jws.getPayload());
+    assertThat(transparencyProto).isEqualTo(expectedTransparencyProto(outputBundle));
+    ImmutableList<CodeRelatedFile> archivedDexCodeRelatedFiles =
+        transparencyProto.getCodeRelatedFileList().stream()
+            .filter(CodeRelatedFile::hasBundletoolRepoPath)
+            .collect(toImmutableList());
+    String bundletoolRepoPath =
+        "/com/android/tools/build/bundletool/archive/dex/1_13_0/classes.dex";
+    CodeRelatedFile codeRelatedFile =
+        CodeRelatedFile.newBuilder()
+            .setType(CodeRelatedFile.Type.DEX)
+            .setBundletoolRepoPath(bundletoolRepoPath)
+            .setSha256(
+                new ResourceReader()
+                    .getResourceByteSource(bundletoolRepoPath)
+                    .hash(Hashing.sha256())
+                    .toString())
+            .build();
+    assertThat(archivedDexCodeRelatedFiles).containsExactly(codeRelatedFile);
+  }
+
+  @Test
+  public void execute_defaultMode_storeArchiveDisabled_archivedDexIsNotPresentInTransparency()
+      throws Exception {
+    createBundle(
+        bundlePath,
+        BundleConfig.newBuilder()
+            .setOptimizations(
+                Optimizations.newBuilder()
+                    .setStoreArchive(StoreArchive.newBuilder().setEnabled(false).build())
+                    .build())
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString())
+                    .build())
+            .build(),
+        /* optOutArchiveWithXml= */ false);
+    AddTransparencyCommand addTransparencyCommand =
+        AddTransparencyCommand.builder()
+            .setMode(Mode.DEFAULT)
+            .setBundlePath(bundlePath)
+            .setOutputPath(outputBundlePath)
+            .setSignerConfig(signerConfig)
+            .build();
+
+    addTransparencyCommand.execute();
+
+    AppBundle outputBundle = AppBundle.buildFromZip(new ZipFile(outputBundlePath.toFile()));
+    Optional<ByteSource> signedTransparencyFile =
+        outputBundle
+            .getBundleMetadata()
+            .getFileAsByteSource(
+                BUNDLETOOL_NAMESPACE, BundleMetadata.TRANSPARENCY_SIGNED_FILE_NAME);
+    assertThat(signedTransparencyFile).isPresent();
+    JsonWebSignature jws =
+        (JsonWebSignature)
+            JsonWebSignature.fromCompactSerialization(
+                signedTransparencyFile.get().asCharSource(Charset.defaultCharset()).read());
+    jws.setKey(signerConfig.getCertificates().get(0).getPublicKey());
+    CodeTransparency transparencyProto = getTransparencyProto(jws.getPayload());
+    ImmutableList<CodeRelatedFile> archivedDexFiles =
+        transparencyProto.getCodeRelatedFileList().stream()
+            .filter(CodeRelatedFile::hasBundletoolRepoPath)
+            .collect(toImmutableList());
+    assertThat(archivedDexFiles).isEmpty();
+  }
+
+  @Test
+  public void execute_defaultMode_optOutArchiveWithXml_archivedDexIsNotPresentInTransparency()
+      throws Exception {
+    createBundle(
+        bundlePath,
+        BundleConfig.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString())
+                    .build())
+            .build(),
+        /* optOutArchiveWithXml= */ true);
+    AddTransparencyCommand addTransparencyCommand =
+        AddTransparencyCommand.builder()
+            .setMode(Mode.DEFAULT)
+            .setBundlePath(bundlePath)
+            .setOutputPath(outputBundlePath)
+            .setSignerConfig(signerConfig)
+            .build();
+
+    addTransparencyCommand.execute();
+
+    AppBundle outputBundle = AppBundle.buildFromZip(new ZipFile(outputBundlePath.toFile()));
+    Optional<ByteSource> signedTransparencyFile =
+        outputBundle
+            .getBundleMetadata()
+            .getFileAsByteSource(
+                BUNDLETOOL_NAMESPACE, BundleMetadata.TRANSPARENCY_SIGNED_FILE_NAME);
+    assertThat(signedTransparencyFile).isPresent();
+    JsonWebSignature jws =
+        (JsonWebSignature)
+            JsonWebSignature.fromCompactSerialization(
+                signedTransparencyFile.get().asCharSource(Charset.defaultCharset()).read());
+    jws.setKey(signerConfig.getCertificates().get(0).getPublicKey());
+    CodeTransparency transparencyProto = getTransparencyProto(jws.getPayload());
+    ImmutableList<CodeRelatedFile> archivedDexFiles =
+        transparencyProto.getCodeRelatedFileList().stream()
+            .filter(CodeRelatedFile::hasBundletoolRepoPath)
+            .collect(toImmutableList());
+    assertThat(archivedDexFiles).isEmpty();
+  }
+
+  @Test
   public void execute_generateCodeTransparencyFileMode() throws Exception {
     createBundle(bundlePath);
     AddTransparencyCommand addTransparencyCommand =
@@ -618,11 +957,12 @@ public final class AddTransparencyCommandTest {
             .setMode(Mode.GENERATE_CODE_TRANSPARENCY_FILE)
             .setBundlePath(bundlePath)
             .setOutputPath(outputUnsignedTransparencyFilePath)
-            .setTransparencyKeyCertificate(signerConfig.getCertificates().get(0))
+            .setTransparencyKeyCertificates(signerConfig.getCertificates())
             .build();
 
     addTransparencyCommand.execute();
 
+    AppBundle inputBundle = AppBundle.buildFromZip(new ZipFile(bundlePath.toFile()));
     List<String> outputFileLines = Files.readAllLines(outputUnsignedTransparencyFilePath);
     assertThat(outputFileLines).hasSize(1);
     String unsignedJwt = outputFileLines.get(0);
@@ -630,7 +970,7 @@ public final class AddTransparencyCommandTest {
     assertThat(jwtComponents).hasSize(2);
     String expectedFinalJws =
         createJwsToken(
-            expectedTransparencyProto(),
+            expectedTransparencyProto(inputBundle),
             signerConfig.getCertificates().get(0),
             signerConfig.getPrivateKey(),
             RSA_USING_SHA256);
@@ -644,7 +984,40 @@ public final class AddTransparencyCommandTest {
                 .asCharSource(Charset.defaultCharset())
                 .read(),
             actualCodeTransparencyContents);
-    assertThat(actualCodeTransparencyContents.build()).isEqualTo(expectedTransparencyProto());
+    assertThat(actualCodeTransparencyContents.build())
+        .isEqualTo(expectedTransparencyProto(inputBundle));
+  }
+
+  @Test
+  public void execute_generateCodeTransparencyFileMode_certificateChain() throws Exception {
+    createBundle(bundlePath);
+    SignerConfig signerConfigWithChain = createSignerConfigCertificateChain();
+    AddTransparencyCommand addTransparencyCommand =
+        AddTransparencyCommand.builder()
+            .setMode(Mode.GENERATE_CODE_TRANSPARENCY_FILE)
+            .setBundlePath(bundlePath)
+            .setOutputPath(outputUnsignedTransparencyFilePath)
+            .setTransparencyKeyCertificates(signerConfigWithChain.getCertificates())
+            .build();
+
+    addTransparencyCommand.execute();
+
+    AppBundle inputBundle = AppBundle.buildFromZip(new ZipFile(bundlePath.toFile()));
+    List<String> outputFileLines = Files.readAllLines(outputUnsignedTransparencyFilePath);
+    assertThat(outputFileLines).hasSize(1);
+    String unsignedJwt = outputFileLines.get(0);
+    ImmutableList<String> jwtComponents = ImmutableList.copyOf(Splitter.on(".").split(unsignedJwt));
+    assertThat(jwtComponents).hasSize(2);
+
+    String expectedFinalJws =
+        createJwsToken(
+            expectedTransparencyProto(inputBundle),
+            signerConfigWithChain.getCertificates().toArray(new X509Certificate[0]),
+            signerConfigWithChain.getPrivateKey(),
+            RSA_USING_SHA256);
+    ImmutableList<String> expectedFinalJwtComponents =
+        ImmutableList.copyOf(Splitter.on(".").split(expectedFinalJws));
+    assertThat(jwtComponents.get(0)).isEqualTo(expectedFinalJwtComponents.get(0));
   }
 
   @Test
@@ -656,7 +1029,7 @@ public final class AddTransparencyCommandTest {
             .setMode(Mode.GENERATE_CODE_TRANSPARENCY_FILE)
             .setBundlePath(bundlePath)
             .setOutputPath(outputUnsignedTransparencyFilePath)
-            .setTransparencyKeyCertificate(signerConfig.getCertificates().get(0))
+            .setTransparencyKeyCertificates(signerConfig.getCertificates())
             .build();
 
     Throwable e = assertThrows(IllegalArgumentException.class, addTransparencyCommand::execute);
@@ -674,7 +1047,7 @@ public final class AddTransparencyCommandTest {
             .setMode(Mode.GENERATE_CODE_TRANSPARENCY_FILE)
             .setBundlePath(bundlePath)
             .setOutputPath(outputUnsignedTransparencyFilePath)
-            .setTransparencyKeyCertificate(signerConfig.getCertificates().get(0))
+            .setTransparencyKeyCertificates(signerConfig.getCertificates())
             .build();
 
     Throwable e = assertThrows(IllegalArgumentException.class, addTransparencyCommand::execute);
@@ -684,9 +1057,72 @@ public final class AddTransparencyCommandTest {
   }
 
   @Test
+  public void execute_generateCodeTransparencyFileMode_hasSharedUserId_denySharedUserId_fail()
+      throws Exception {
+    createBundle(bundlePath, /* hasSharedUserId= */ true);
+    AddTransparencyCommand addTransparencyCommand =
+        AddTransparencyCommand.builder()
+            .setMode(Mode.GENERATE_CODE_TRANSPARENCY_FILE)
+            .setBundlePath(bundlePath)
+            .setOutputPath(outputBundlePath)
+            .setSignerConfig(signerConfig)
+            .build();
+
+    Throwable e = assertThrows(InvalidBundleException.class, addTransparencyCommand::execute);
+    assertThat(e)
+        .hasMessageThat()
+        .isEqualTo(
+            "Transparency can not be added because `sharedUserId` attribute is specified in one of"
+                + " the manifests and `allow-shared-user-id` flag is either false or not specified"
+                + " explicitly.");
+  }
+
+  @Test
+  public void execute_generateCodeTransparencyFileMode_hasSharedUserId_allowSharedUserId_success()
+      throws Exception {
+    createBundle(bundlePath, /* hasSharedUserId= */ true);
+    AddTransparencyCommand addTransparencyCommand =
+        AddTransparencyCommand.builder()
+            .setMode(Mode.GENERATE_CODE_TRANSPARENCY_FILE)
+            .setBundlePath(bundlePath)
+            .setOutputPath(outputUnsignedTransparencyFilePath)
+            .setTransparencyKeyCertificates(signerConfig.getCertificates())
+            .setAllowSharedUserId(true)
+            .build();
+
+    addTransparencyCommand.execute();
+
+    AppBundle inputBundle = AppBundle.buildFromZip(new ZipFile(bundlePath.toFile()));
+    List<String> outputFileLines = Files.readAllLines(outputUnsignedTransparencyFilePath);
+    assertThat(outputFileLines).hasSize(1);
+    String unsignedJwt = outputFileLines.get(0);
+    ImmutableList<String> jwtComponents = ImmutableList.copyOf(Splitter.on(".").split(unsignedJwt));
+    assertThat(jwtComponents).hasSize(2);
+    String expectedFinalJws =
+        createJwsToken(
+            expectedTransparencyProto(inputBundle),
+            signerConfig.getCertificates().get(0),
+            signerConfig.getPrivateKey(),
+            RSA_USING_SHA256);
+    ImmutableList<String> expectedFinalJwtComponents =
+        ImmutableList.copyOf(Splitter.on(".").split(expectedFinalJws));
+    assertThat(jwtComponents.get(0)).isEqualTo(expectedFinalJwtComponents.get(0));
+    CodeTransparency.Builder actualCodeTransparencyContents = CodeTransparency.newBuilder();
+    JsonFormat.parser()
+        .merge(
+            ByteSource.wrap(BaseEncoding.base64().decode(jwtComponents.get(1)))
+                .asCharSource(Charset.defaultCharset())
+                .read(),
+            actualCodeTransparencyContents);
+    assertThat(actualCodeTransparencyContents.build())
+        .isEqualTo(expectedTransparencyProto(inputBundle));
+  }
+
+  @Test
   public void execute_injectSignature() throws Exception {
     // create bundle.
     createBundle(bundlePath);
+    signerConfig = createSignerConfigCertificateChain();
     // add transparency file in default mode.
     Path tmpOutputBundlePath = tmpDir.resolve("tmp_output_bundle.aab");
     AddTransparencyCommand.builder()
@@ -713,7 +1149,7 @@ public final class AddTransparencyCommandTest {
         .setMode(Mode.INJECT_SIGNATURE)
         .setBundlePath(bundlePath)
         .setOutputPath(outputBundlePath)
-        .setTransparencyKeyCertificate(signerConfig.getCertificates().get(0))
+        .setTransparencyKeyCertificates(signerConfig.getCertificates())
         .setTransparencySignaturePath(transparencySignatureFilePath)
         .build()
         .execute();
@@ -735,7 +1171,7 @@ public final class AddTransparencyCommandTest {
     // jws.getPayload method will do signature verification using the public key set below.
     finalJws.setKey(signerConfig.getCertificates().get(0).getPublicKey());
     CodeTransparency transparencyProto = getTransparencyProto(finalJws.getPayload());
-    assertThat(transparencyProto).isEqualTo(expectedTransparencyProto());
+    assertThat(transparencyProto).isEqualTo(expectedTransparencyProto(outputBundle));
   }
 
   @Test
@@ -751,7 +1187,7 @@ public final class AddTransparencyCommandTest {
                     .setMode(Mode.INJECT_SIGNATURE)
                     .setBundlePath(bundlePath)
                     .setOutputPath(outputBundlePath)
-                    .setTransparencyKeyCertificate(signerConfig.getCertificates().get(0))
+                    .setTransparencyKeyCertificates(signerConfig.getCertificates())
                     .setTransparencySignaturePath(transparencySignatureFilePath)
                     .build()
                     .execute());
@@ -773,7 +1209,7 @@ public final class AddTransparencyCommandTest {
                 .print(
                     CodeTransparencyFactory.createCodeTransparencyMetadata(
                         AppBundle.buildFromZip(new ZipFile(bundlePath.toFile())))),
-            signerConfig.getCertificates().get(0));
+            signerConfig.getCertificates());
     byte[] unsignedTransparencyFileBytes =
         CharSource.wrap(unsignedTransparencyToken).asByteSource(Charset.defaultCharset()).read();
     Files.write(outputUnsignedTransparencyFilePath, unsignedTransparencyFileBytes);
@@ -792,7 +1228,7 @@ public final class AddTransparencyCommandTest {
                     .setMode(Mode.INJECT_SIGNATURE)
                     .setBundlePath(bundlePath)
                     .setOutputPath(outputBundlePath)
-                    .setTransparencyKeyCertificate(signerConfig.getCertificates().get(0))
+                    .setTransparencyKeyCertificates(signerConfig.getCertificates())
                     .setTransparencySignaturePath(transparencySignatureFilePath)
                     .build()
                     .execute());
@@ -810,7 +1246,7 @@ public final class AddTransparencyCommandTest {
         .setMode(Mode.GENERATE_CODE_TRANSPARENCY_FILE)
         .setBundlePath(bundlePath)
         .setOutputPath(outputUnsignedTransparencyFilePath)
-        .setTransparencyKeyCertificate(signerConfig.getCertificates().get(0))
+        .setTransparencyKeyCertificates(signerConfig.getCertificates())
         .build()
         .execute();
     // update signer config so that a new key pair is generated, which does not match the
@@ -830,7 +1266,7 @@ public final class AddTransparencyCommandTest {
                     .setMode(Mode.INJECT_SIGNATURE)
                     .setBundlePath(bundlePath)
                     .setOutputPath(outputBundlePath)
-                    .setTransparencyKeyCertificate(signerConfig.getCertificates().get(0))
+                    .setTransparencyKeyCertificates(signerConfig.getCertificates())
                     .setTransparencySignaturePath(transparencySignatureFilePath)
                     .build()
                     .execute());
@@ -839,6 +1275,84 @@ public final class AddTransparencyCommandTest {
         .isEqualTo(
             "Code transparency verification failed for the provided public key certificate and"
                 + " signature.");
+  }
+
+  @Test
+  public void execute_injectSignature_hasSharedUserId_denySharedUserId_fail() throws Exception {
+    createBundle(bundlePath, /* hasSharedUserId= */ true);
+    AddTransparencyCommand addTransparencyCommand =
+        AddTransparencyCommand.builder()
+            .setMode(Mode.INJECT_SIGNATURE)
+            .setBundlePath(bundlePath)
+            .setOutputPath(outputBundlePath)
+            .setSignerConfig(signerConfig)
+            .build();
+
+    Throwable e = assertThrows(InvalidBundleException.class, addTransparencyCommand::execute);
+    assertThat(e)
+        .hasMessageThat()
+        .isEqualTo(
+            "Transparency can not be added because `sharedUserId` attribute is specified in one of"
+                + " the manifests and `allow-shared-user-id` flag is either false or not specified"
+                + " explicitly.");
+  }
+
+  @Test
+  public void execute_injectSignature_hasSharedUserId_allowSharedUserId_success() throws Exception {
+    // create bundle.
+    createBundle(bundlePath, /* hasSharedUserId= */ true);
+    signerConfig = createSignerConfigCertificateChain();
+    // add transparency file in default mode.
+    Path tmpOutputBundlePath = tmpDir.resolve("tmp_output_bundle.aab");
+    AddTransparencyCommand.builder()
+        .setMode(Mode.DEFAULT)
+        .setBundlePath(bundlePath)
+        .setOutputPath(tmpOutputBundlePath)
+        .setSignerConfig(signerConfig)
+        .setAllowSharedUserId(true)
+        .build()
+        .execute();
+    // get the correct transparency signature bytes.
+    AppBundle tmpOutputBundle = AppBundle.buildFromZip(new ZipFile(tmpOutputBundlePath.toFile()));
+    ByteSource signedTransparencyFile =
+        tmpOutputBundle
+            .getBundleMetadata()
+            .getFileAsByteSource(BUNDLETOOL_NAMESPACE, BundleMetadata.TRANSPARENCY_SIGNED_FILE_NAME)
+            .get();
+    String jws = signedTransparencyFile.asCharSource(Charset.defaultCharset()).read();
+    String signature = ImmutableList.copyOf(Splitter.on(".").split(jws)).get(2);
+    byte[] signatureBytes = BaseEncoding.base64Url().decode(signature);
+    Files.write(transparencySignatureFilePath, signatureBytes);
+
+    // inject signature into the original bundle
+    AddTransparencyCommand.builder()
+        .setMode(Mode.INJECT_SIGNATURE)
+        .setBundlePath(bundlePath)
+        .setOutputPath(outputBundlePath)
+        .setTransparencyKeyCertificates(signerConfig.getCertificates())
+        .setTransparencySignaturePath(transparencySignatureFilePath)
+        .setAllowSharedUserId(true)
+        .build()
+        .execute();
+
+    // verify that the output bundle contains signed code transparency metadata.
+    AppBundle outputBundle = AppBundle.buildFromZip(new ZipFile(outputBundlePath.toFile()));
+    Optional<ByteSource> finalSignedTransparencyFile =
+        outputBundle
+            .getBundleMetadata()
+            .getFileAsByteSource(
+                BUNDLETOOL_NAMESPACE, BundleMetadata.TRANSPARENCY_SIGNED_FILE_NAME);
+    assertThat(finalSignedTransparencyFile).isPresent();
+    JsonWebSignature finalJws =
+        (JsonWebSignature)
+            JsonWebSignature.fromCompactSerialization(
+                finalSignedTransparencyFile.get().asCharSource(Charset.defaultCharset()).read());
+    assertThat(finalJws.getAlgorithmHeaderValue()).isEqualTo(RSA_USING_SHA256);
+    assertThat(finalJws.getCertificateChainHeaderValue()).isEqualTo(signerConfig.getCertificates());
+    // jws.getPayload method will do signature verification using the public key set below.
+    finalJws.setKey(signerConfig.getCertificates().get(0).getPublicKey());
+    CodeTransparency transparencyProto = getTransparencyProto(finalJws.getPayload());
+    assertThat(transparencyProto).isEqualTo(expectedTransparencyProto(outputBundle));
   }
 
   @Test
@@ -867,6 +1381,32 @@ public final class AddTransparencyCommandTest {
             .addModule(
                 FEATURE_MODULE2,
                 module -> addCodeFilesToBundleModule(module, hasSharedUserId, minSdkVersion))
+            .build();
+    new AppBundleSerializer().writeToDisk(appBundle, path);
+  }
+
+  private static void createBundle(
+      Path path, BundleConfig bundleConfig, boolean optOutArchiveWithXml) throws Exception {
+    boolean hasSharedUserId = false;
+    int minSdkVersion = 28;
+    AppBundle appBundle =
+        new AppBundleBuilder()
+            .addModule(
+                BASE_MODULE,
+                module ->
+                    addCodeFilesToBundleModule(
+                        module, hasSharedUserId, minSdkVersion, optOutArchiveWithXml))
+            .setBundleConfig(bundleConfig)
+            .addModule(
+                FEATURE_MODULE1,
+                module ->
+                    addCodeFilesToBundleModule(
+                        module, hasSharedUserId, minSdkVersion, /* addArchiveOptOutXml= */ false))
+            .addModule(
+                FEATURE_MODULE2,
+                module ->
+                    addCodeFilesToBundleModule(
+                        module, hasSharedUserId, minSdkVersion, /* addArchiveOptOutXml= */ false))
             .build();
     new AppBundleSerializer().writeToDisk(appBundle, path);
   }
@@ -908,6 +1448,17 @@ public final class AddTransparencyCommandTest {
   }
 
   private static BundleModule addCodeFilesToBundleModule(
+      BundleModuleBuilder module,
+      boolean hasSharedUserId,
+      int minSdkVersion,
+      boolean addArchiveOptOutXml) {
+    if (addArchiveOptOutXml) {
+      module.addFile(AppBundle.ARCHIVE_OPT_OUT_XML_PATH);
+    }
+    return addCodeFilesToBundleModule(module, hasSharedUserId, minSdkVersion);
+  }
+
+  private static BundleModule addCodeFilesToBundleModule(
       BundleModuleBuilder module, boolean hasSharedUserId, int minSdkVersion) {
     XmlNode manifest =
         hasSharedUserId
@@ -927,12 +1478,16 @@ public final class AddTransparencyCommandTest {
         .build();
   }
 
-  private CodeTransparency expectedTransparencyProto() {
+  private CodeTransparency expectedTransparencyProto(AppBundle appBundle) throws IOException {
     CodeTransparency.Builder transparencyBuilder =
         CodeTransparency.newBuilder().setVersion(CodeTransparencyVersion.getCurrentVersion());
     addCodeFilesToTransparencyProto(transparencyBuilder, BASE_MODULE);
     addCodeFilesToTransparencyProto(transparencyBuilder, FEATURE_MODULE1);
     addCodeFilesToTransparencyProto(transparencyBuilder, FEATURE_MODULE2);
+    if (appBundle.getStoreArchive().orElse(true)) {
+      transparencyBuilder.addCodeRelatedFile(
+          CodeRelatedFileBuilderHelper.archivedDexCodeRelatedFile(appBundle.getVersion()));
+    }
     return transparencyBuilder.build();
   }
 
@@ -981,5 +1536,72 @@ public final class AddTransparencyCommandTest {
     CodeTransparency.Builder transparencyProto = CodeTransparency.newBuilder();
     JsonFormat.parser().merge(transparencyPayload, transparencyProto);
     return transparencyProto.build();
+  }
+
+  private static SignerConfig createSignerConfigCertificateChain() throws Exception {
+    KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
+    keyGen.initialize(MIN_RSA_KEY_LENGTH);
+    KeyPair rootKeyPair = keyGen.generateKeyPair();
+    KeyPair leafKeyPair = keyGen.generateKeyPair();
+
+    X509Certificate rootCertificate =
+        createCertificate(
+            "AddTransparencyCommandRoot",
+            rootKeyPair,
+            /* issuerCertificate= */ Optional.empty(),
+            /* issuerPrivateKey= */ Optional.empty());
+    X509Certificate leafCertificate =
+        createCertificate(
+            "AddTransparencyCommandLeaf",
+            leafKeyPair,
+            Optional.of(rootCertificate),
+            Optional.of(rootKeyPair.getPrivate()));
+
+    return SignerConfig.builder()
+        .setPrivateKey(leafKeyPair.getPrivate())
+        .setCertificates(ImmutableList.of(leafCertificate, rootCertificate))
+        .build();
+  }
+
+  private static X509Certificate createCertificate(
+      String cnName,
+      KeyPair certKeyPair,
+      Optional<X509Certificate> issuerCertificate,
+      Optional<PrivateKey> issuerPrivateKey)
+      throws Exception {
+    X500Name name = new X500Name("CN=" + cnName);
+    BigInteger serialNumber = BigInteger.valueOf(System.currentTimeMillis());
+    Instant validFrom = Instant.now();
+    Instant validUntil = validFrom.plus(Duration.ofDays(10 * 360));
+
+    // If there is no issuer, we self-sign our certificate.
+    X500Name issuerName;
+    PrivateKey issuerKey;
+    if (issuerCertificate.isPresent()) {
+      issuerName = new X500Name(issuerCertificate.get().getSubjectDN().getName());
+      issuerKey = issuerPrivateKey.get();
+    } else {
+      issuerName = name;
+      issuerKey = certKeyPair.getPrivate();
+    }
+
+    // The cert builder to build up our certificate information
+    JcaX509v3CertificateBuilder builder =
+        new JcaX509v3CertificateBuilder(
+            issuerName,
+            serialNumber,
+            Date.from(validFrom),
+            Date.from(validUntil),
+            name,
+            certKeyPair.getPublic());
+
+    // Make the cert to a Cert Authority to sign more certs when needed
+    if (!issuerCertificate.isPresent()) {
+      builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(true));
+    }
+
+    ContentSigner signer = new JcaContentSignerBuilder("SHA256WithRSA").build(issuerKey);
+    X509CertificateHolder certHolder = builder.build(signer);
+    return new JcaX509CertificateConverter().getCertificate(certHolder);
   }
 }

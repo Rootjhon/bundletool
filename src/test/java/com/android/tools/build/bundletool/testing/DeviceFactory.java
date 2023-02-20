@@ -21,9 +21,11 @@ import static com.android.tools.build.bundletool.model.utils.ResourcesUtils.DENS
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.android.bundle.Devices.DeviceSpec;
+import com.android.bundle.Devices.SdkRuntime;
 import com.android.bundle.Targeting.ScreenDensity.DensityAlias;
 import com.android.tools.build.bundletool.model.utils.Versions;
 import com.google.protobuf.Int32Value;
+import com.google.protobuf.StringValue;
 import com.google.protobuf.util.JsonFormat;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -142,8 +144,18 @@ public final class DeviceFactory {
     return DeviceSpec.newBuilder().setDeviceTier(Int32Value.of(deviceTier)).build();
   }
 
+  public static DeviceSpec countrySet(String countrySet) {
+    return DeviceSpec.newBuilder().setCountrySet(StringValue.of(countrySet)).build();
+  }
+
   public static DeviceSpec deviceGroups(String... deviceGroups) {
     return DeviceSpec.newBuilder().addAllDeviceGroups(Arrays.asList(deviceGroups)).build();
+  }
+
+  public static DeviceSpec sdkRuntimeSupported(boolean supported) {
+    return DeviceSpec.newBuilder()
+        .setSdkRuntime(SdkRuntime.newBuilder().setSupported(supported))
+        .build();
   }
 
   public static DeviceSpec mergeSpecs(DeviceSpec deviceSpec, DeviceSpec... specParts) {

@@ -40,7 +40,9 @@ public final class GetSizeCsvUtils {
           Dimension.SCREEN_DENSITY,
           Dimension.LANGUAGE,
           Dimension.TEXTURE_COMPRESSION_FORMAT,
-          Dimension.DEVICE_TIER);
+          Dimension.DEVICE_TIER,
+          Dimension.COUNTRY_SET,
+          Dimension.SDK_RUNTIME);
 
   public static String getSizeTotalOutputInCsv(
       ConfigurationSizes configurationSizes,
@@ -95,6 +97,8 @@ public final class GetSizeCsvUtils {
             .put(
                 Dimension.DEVICE_TIER,
                 () -> sizeConfiguration.getDeviceTier().map(i -> i.toString()))
+            .put(Dimension.COUNTRY_SET, sizeConfiguration::getCountrySet)
+            .put(Dimension.SDK_RUNTIME, sizeConfiguration::getSdkRuntime)
             .build();
 
     return Stream.concat(

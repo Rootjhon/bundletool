@@ -31,6 +31,8 @@ import static com.android.tools.build.bundletool.testing.DeviceFactory.locales;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.mergeSpecs;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.sdkVersion;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.abiTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.alternativeCountrySetTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.countrySetTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.deviceTierTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.languageTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.screenDensityTargeting;
@@ -43,8 +45,10 @@ import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
 
 import com.android.bundle.Devices.DeviceSpec;
 import com.android.bundle.Targeting.AbiTargeting;
+import com.android.bundle.Targeting.CountrySetTargeting;
 import com.android.bundle.Targeting.LanguageTargeting;
 import com.android.bundle.Targeting.ScreenDensityTargeting;
+import com.android.bundle.Targeting.SdkRuntimeTargeting;
 import com.android.bundle.Targeting.SdkVersionTargeting;
 import com.android.bundle.Targeting.TextureCompressionFormat.TextureCompressionFormatAlias;
 import com.android.bundle.Targeting.TextureCompressionFormatTargeting;
@@ -138,12 +142,13 @@ public class DeviceSpecUtilsTest {
   }
 
   @Test
-  public void deviceSpecFromTargetingBuilder_setSupportedTextureCompressionFormats_toDefaultInstance() {
+  public void
+      deviceSpecFromTargetingBuilder_setSupportedTextureCompressionFormats_toDefaultInstance() {
     assertThat(
-        new DeviceSpecFromTargetingBuilder(DeviceSpec.getDefaultInstance())
-            .setSupportedTextureCompressionFormats(
-                TextureCompressionFormatTargeting.getDefaultInstance())
-            .build())
+            new DeviceSpecFromTargetingBuilder(DeviceSpec.getDefaultInstance())
+                .setSupportedTextureCompressionFormats(
+                    TextureCompressionFormatTargeting.getDefaultInstance())
+                .build())
         .isEqualToDefaultInstance();
   }
 
@@ -172,6 +177,48 @@ public class DeviceSpecUtilsTest {
             .build();
 
     assertThat(deviceSpec.getDeviceTier().getValue()).isEqualTo(2);
+  }
+
+  @Test
+  public void deviceSpecFromTargetingBuilder_setCountrySet() {
+    DeviceSpec deviceSpec =
+        new DeviceSpecFromTargetingBuilder(DeviceSpec.getDefaultInstance())
+            .setCountrySet(
+                countrySetTargeting(
+                    /* value= */ "latam", /* alternatives= */ ImmutableList.of("sea")))
+            .build();
+
+    assertThat(deviceSpec.getCountrySet().getValue()).isEqualTo("latam");
+  }
+
+  @Test
+  public void deviceSpecFromTargetingBuilder_setCountrySet_onlyAlternatives() {
+    DeviceSpec deviceSpec =
+        new DeviceSpecFromTargetingBuilder(DeviceSpec.getDefaultInstance())
+            .setCountrySet(alternativeCountrySetTargeting(ImmutableList.of("sea", "latam")))
+            .build();
+
+    assertThat(deviceSpec.getCountrySet().getValue()).isEmpty();
+  }
+
+  @Test
+  public void deviceSpecFromTargetingBuilder_setCountrySet_defaultInstance() {
+    DeviceSpec deviceSpec =
+        new DeviceSpecFromTargetingBuilder(DeviceSpec.getDefaultInstance())
+            .setCountrySet(CountrySetTargeting.getDefaultInstance())
+            .build();
+
+    assertThat(deviceSpec.hasCountrySet()).isFalse();
+  }
+
+  @Test
+  public void deviceSpecFromTargetingBuilder_setSdkRuntime() {
+    DeviceSpec deviceSpec =
+        new DeviceSpecFromTargetingBuilder(DeviceSpec.getDefaultInstance())
+            .setSdkRuntime(SdkRuntimeTargeting.newBuilder().setRequiresSdkRuntime(true).build())
+            .build();
+
+    assertThat(deviceSpec.getSdkRuntime().getSupported()).isTrue();
   }
 
   @Test

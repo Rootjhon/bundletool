@@ -17,6 +17,8 @@
 package com.android.tools.build.bundletool.model.manifestelements;
 
 import static com.android.tools.build.bundletool.model.AndroidManifest.ACTION_ELEMENT_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.CATEGORY_ELEMENT_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.INTENT_FILTER_ELEMENT_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.NAME_ATTRIBUTE_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.NAME_RESOURCE_ID;
 
@@ -25,8 +27,8 @@ import com.android.tools.build.bundletool.model.utils.xmlproto.XmlProtoElement;
 import com.android.tools.build.bundletool.model.utils.xmlproto.XmlProtoElementBuilder;
 import com.google.auto.value.AutoValue;
 import com.google.auto.value.extension.memoized.Memoized;
+import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.Immutable;
-import java.util.Optional;
 
 /**
  * Represents Intent filter element of Android manifest.
@@ -37,12 +39,9 @@ import java.util.Optional;
 @AutoValue
 @AutoValue.CopyAnnotations
 public abstract class IntentFilter {
-  public static final String INTENT_FILTER_ELEMENT_NAME = "intent-filter";
-  public static final String CATEGORY_ELEMENT_NAME = "category";
+  abstract ImmutableList<String> getActionNames();
 
-  abstract Optional<String> getActionName();
-
-  abstract Optional<String> getCategoryName();
+  abstract ImmutableList<String> getCategoryNames();
 
   public static Builder builder() {
     return new AutoValue_IntentFilter.Builder();
@@ -52,39 +51,49 @@ public abstract class IntentFilter {
   public XmlProtoElement asXmlProtoElement() {
     XmlProtoElementBuilder elementBuilder =
         XmlProtoElementBuilder.create(INTENT_FILTER_ELEMENT_NAME);
-    setActionElement(elementBuilder);
-    setCategoryElement(elementBuilder);
+    addAllActionElements(elementBuilder);
+    addCategoryElement(elementBuilder);
     return elementBuilder.build();
   }
 
-  private void setActionElement(XmlProtoElementBuilder elementBuilder) {
-    if (getActionName().isPresent()) {
+  private void addAllActionElements(XmlProtoElementBuilder elementBuilder) {
+    for (String actionName : getActionNames()) {
       elementBuilder.addChildElement(
           XmlProtoElementBuilder.create(ACTION_ELEMENT_NAME)
               .addAttribute(
                   XmlProtoAttributeBuilder.createAndroidAttribute(
                           NAME_ATTRIBUTE_NAME, NAME_RESOURCE_ID)
-                      .setValueAsString(getActionName().get())));
+                      .setValueAsString(actionName)));
     }
   }
 
-  private void setCategoryElement(XmlProtoElementBuilder elementBuilder) {
-    if (getCategoryName().isPresent()) {
+  private void addCategoryElement(XmlProtoElementBuilder elementBuilder) {
+    for (String categoryName : getCategoryNames()) {
       elementBuilder.addChildElement(
           XmlProtoElementBuilder.create(CATEGORY_ELEMENT_NAME)
               .addAttribute(
                   XmlProtoAttributeBuilder.createAndroidAttribute(
                           NAME_ATTRIBUTE_NAME, NAME_RESOURCE_ID)
-                      .setValueAsString(getCategoryName().get())));
+                      .setValueAsString(categoryName)));
     }
   }
 
   /** Builder for IntentFilter. */
   @AutoValue.Builder
   public abstract static class Builder {
-    public abstract Builder setActionName(String actionName);
+    abstract ImmutableList.Builder<String> actionNamesBuilder();
 
-    public abstract Builder setCategoryName(String categoryName);
+    public final Builder addActionName(String value) {
+      actionNamesBuilder().add(value);
+      return this;
+    }
+
+    abstract ImmutableList.Builder<String> categoryNamesBuilder();
+
+    public final Builder addCategoryName(String value) {
+      categoryNamesBuilder().add(value);
+      return this;
+    }
 
     public abstract IntentFilter build();
   }

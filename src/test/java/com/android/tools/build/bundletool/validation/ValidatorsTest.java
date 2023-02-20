@@ -59,6 +59,9 @@ public class ValidatorsTest {
             .addAll(toClasses(AppBundleValidator.DEFAULT_BUNDLE_SUB_VALIDATORS))
             .addAll(toClasses(BundleModulesValidator.MODULE_FILE_SUB_VALIDATORS))
             .addAll(toClasses(BundleModulesValidator.MODULES_SUB_VALIDATORS))
+            .addAll(toClasses(SdkBundleValidator.DEFAULT_BUNDLE_FILE_SUB_VALIDATORS))
+            .addAll(toClasses(SdkBundleValidator.DEFAULT_BUNDLE_SUB_VALIDATORS))
+            .addAll(toClasses(SdkModulesFileValidator.DEFAULT_MODULES_FILE_SUB_VALIDATORS))
             .build();
 
     assertThat(existingSubValidators).containsExactlyElementsIn(registeredSubValidators);

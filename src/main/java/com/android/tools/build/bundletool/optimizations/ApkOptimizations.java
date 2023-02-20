@@ -16,6 +16,7 @@
 package com.android.tools.build.bundletool.optimizations;
 
 import static com.android.tools.build.bundletool.model.OptimizationDimension.ABI;
+import static com.android.tools.build.bundletool.model.OptimizationDimension.COUNTRY_SET;
 import static com.android.tools.build.bundletool.model.OptimizationDimension.DEVICE_TIER;
 import static com.android.tools.build.bundletool.model.OptimizationDimension.LANGUAGE;
 import static com.android.tools.build.bundletool.model.OptimizationDimension.SCREEN_DENSITY;
@@ -23,6 +24,7 @@ import static com.android.tools.build.bundletool.model.OptimizationDimension.TEX
 import static com.google.common.base.Preconditions.checkNotNull;
 
 import com.android.bundle.Config.SuffixStripping;
+import com.android.bundle.Config.UncompressDexFiles.UncompressedDexTargetSdk;
 import com.android.tools.build.bundletool.model.OptimizationDimension;
 import com.android.tools.build.bundletool.model.version.Version;
 import com.google.auto.value.AutoValue;
@@ -70,11 +72,37 @@ public abstract class ApkOptimizations {
                       .setUncompressNativeLibraries(true)
                       .setStandaloneDimensions(ImmutableSet.of(ABI, SCREEN_DENSITY))
                       .build())
-              .build();
+              .put(
+                  Version.of("1.11.3"),
+                  ApkOptimizations.builder()
+                      .setSplitDimensions(
+                          ImmutableSet.of(
+                              ABI, SCREEN_DENSITY, TEXTURE_COMPRESSION_FORMAT, LANGUAGE))
+                      .setUncompressNativeLibraries(true)
+                      .setStandaloneDimensions(ImmutableSet.of(ABI, SCREEN_DENSITY))
+                      .setUncompressDexFiles(true)
+                      .setUncompressedDexTargetSdk(UncompressedDexTargetSdk.SDK_31)
+                      .build())
+              .put(
+                  Version.of("1.13.2"),
+                  ApkOptimizations.builder()
+                      .setSplitDimensions(
+                          ImmutableSet.of(
+                              ABI,
+                              SCREEN_DENSITY,
+                              TEXTURE_COMPRESSION_FORMAT,
+                              LANGUAGE,
+                              DEVICE_TIER))
+                      .setUncompressNativeLibraries(true)
+                      .setStandaloneDimensions(ImmutableSet.of(ABI, SCREEN_DENSITY))
+                      .setUncompressDexFiles(true)
+                      .setUncompressedDexTargetSdk(UncompressedDexTargetSdk.SDK_31)
+                      .build())
+              .buildOrThrow();
 
   /** List of dimensions supported by asset modules. */
   private static final ImmutableSet<OptimizationDimension> DIMENSIONS_SUPPORTED_BY_ASSET_MODULES =
-      ImmutableSet.of(LANGUAGE, TEXTURE_COMPRESSION_FORMAT, DEVICE_TIER);
+      ImmutableSet.of(LANGUAGE, TEXTURE_COMPRESSION_FORMAT, DEVICE_TIER, COUNTRY_SET);
 
   public abstract ImmutableSet<OptimizationDimension> getSplitDimensions();
 
@@ -87,6 +115,8 @@ public abstract class ApkOptimizations {
 
   public abstract boolean getUncompressDexFiles();
 
+  public abstract UncompressedDexTargetSdk getUncompressedDexTargetSdk();
+
   public abstract ImmutableSet<OptimizationDimension> getStandaloneDimensions();
 
   public abstract ImmutableMap<OptimizationDimension, SuffixStripping> getSuffixStrippings();
@@ -97,6 +127,7 @@ public abstract class ApkOptimizations {
     return new AutoValue_ApkOptimizations.Builder()
         .setUncompressNativeLibraries(false)
         .setUncompressDexFiles(false)
+        .setUncompressedDexTargetSdk(UncompressedDexTargetSdk.UNSPECIFIED)
         .setSuffixStrippings(ImmutableMap.of());
   }
 
@@ -108,6 +139,9 @@ public abstract class ApkOptimizations {
     public abstract Builder setUncompressNativeLibraries(boolean enable);
 
     public abstract Builder setUncompressDexFiles(boolean enable);
+
+    public abstract Builder setUncompressedDexTargetSdk(
+        UncompressedDexTargetSdk uncompressedDexTargetSdk);
 
     public abstract Builder setStandaloneDimensions(
         ImmutableSet<OptimizationDimension> standaloneDimensions);

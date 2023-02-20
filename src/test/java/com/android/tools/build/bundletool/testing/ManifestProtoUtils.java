@@ -20,9 +20,13 @@ import static com.android.tools.build.bundletool.model.AndroidManifest.ACTIVITY_
 import static com.android.tools.build.bundletool.model.AndroidManifest.ACTIVITY_ELEMENT_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.ANDROID_NAMESPACE_URI;
 import static com.android.tools.build.bundletool.model.AndroidManifest.APPLICATION_ELEMENT_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.CERTIFICATE_DIGEST_ATTRIBUTE_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.CERTIFICATE_DIGEST_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.CONDITION_DEVICE_GROUPS_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.DEBUGGABLE_ATTRIBUTE_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.DEBUGGABLE_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.DESCRIPTION_ATTRIBUTE_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.DESCRIPTION_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.DEVICE_GROUP_ELEMENT_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.DISTRIBUTION_NAMESPACE_URI;
 import static com.android.tools.build.bundletool.model.AndroidManifest.EXTRACT_NATIVE_LIBS_ATTRIBUTE_NAME;
@@ -44,9 +48,19 @@ import static com.android.tools.build.bundletool.model.AndroidManifest.NAME_ATTR
 import static com.android.tools.build.bundletool.model.AndroidManifest.NAME_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.NATIVE_ACTIVITY_LIB_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.NO_NAMESPACE_URI;
+import static com.android.tools.build.bundletool.model.AndroidManifest.PERMISSION_ELEMENT_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.PERMISSION_GROUP_ELEMENT_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.PERMISSION_TREE_ELEMENT_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.PROPERTY_ELEMENT_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.PROVIDER_ELEMENT_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.RECEIVER_ELEMENT_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.REQUIRED_BY_PRIVACY_SANDBOX_SDK_ATTRIBUTE_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.RESOURCE_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.ROUND_ICON_ATTRIBUTE_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.ROUND_ICON_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.SDK_LIBRARY_ELEMENT_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.SDK_PATCH_VERSION_ATTRIBUTE_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.SDK_VERSION_MAJOR_ATTRIBUTE_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.SERVICE_ELEMENT_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.SPLIT_NAME_ATTRIBUTE_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.SPLIT_NAME_RESOURCE_ID;
@@ -56,12 +70,17 @@ import static com.android.tools.build.bundletool.model.AndroidManifest.TARGET_SD
 import static com.android.tools.build.bundletool.model.AndroidManifest.TARGET_SDK_VERSION_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.THEME_ATTRIBUTE_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.THEME_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.TOOLS_NAMESPACE_URI;
+import static com.android.tools.build.bundletool.model.AndroidManifest.USES_FEATURE_ELEMENT_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.USES_SDK_ELEMENT_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.USES_SDK_LIBRARY_ELEMENT_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.VALUE_ATTRIBUTE_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.VALUE_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.VERSION_CODE_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.VERSION_MAJOR_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.VERSION_NAME_ATTRIBUTE_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.VERSION_NAME_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.utils.xmlproto.XmlProtoAttributeBuilder.createAndroidAttribute;
 
 import com.android.aapt.Resources;
 import com.android.aapt.Resources.Item;
@@ -346,6 +365,16 @@ public final class ManifestProtoUtils {
             .addAttribute(
                 XmlProtoAttributeBuilder.createAndroidAttribute(
                         ICON_ATTRIBUTE_NAME, ICON_RESOURCE_ID)
+                    .setValueAsRefId(refId));
+  }
+
+  public static ManifestMutator withAppRoundIcon(int refId) {
+    return manifestElement ->
+        manifestElement
+            .getOrCreateChildElement(APPLICATION_ELEMENT_NAME)
+            .addAttribute(
+                XmlProtoAttributeBuilder.createAndroidAttribute(
+                        ROUND_ICON_ATTRIBUTE_NAME, ROUND_ICON_RESOURCE_ID)
                     .setValueAsRefId(refId));
   }
 
@@ -656,6 +685,23 @@ public final class ManifestProtoUtils {
             .setValueAsBoolean(value);
   }
 
+  public static ManifestMutator withDescription(int value) {
+    return manifestElement ->
+        manifestElement
+            .getOrCreateChildElement(APPLICATION_ELEMENT_NAME)
+            .getOrCreateAndroidAttribute(DESCRIPTION_ATTRIBUTE_NAME, DESCRIPTION_RESOURCE_ID)
+            .setValueAsRefId(value);
+  }
+
+  public static ManifestMutator withCustomApplicationResourceReferenceAttribute(
+      String attributeName, int resourceId, int value) {
+    return manifestElement ->
+        manifestElement
+            .getOrCreateChildElement(APPLICATION_ELEMENT_NAME)
+            .getOrCreateAndroidAttribute(attributeName, resourceId)
+            .setValueAsRefId(value);
+  }
+
   public static ManifestMutator withMetadataValue(String key, String value) {
     return manifestElement ->
         manifestElement
@@ -800,6 +846,21 @@ public final class ManifestProtoUtils {
     return withUserCountriesConditionInternal(codes, Optional.empty());
   }
 
+  /**
+   * Adds the given element with {@link
+   * AndroidManifest#REQUIRED_BY_PRIVACY_SANDBOX_SDK_ATTRIBUTE_NAME} boolean attribute.
+   */
+  public static ManifestMutator withRequiredByPrivacySandboxElement(
+      String elementName, boolean requiredByPrivacySandboxSdkValue) {
+    return manifestElement ->
+        manifestElement.addChildElement(
+            XmlProtoElementBuilder.create(elementName)
+                .addAttribute(
+                    XmlProtoAttributeBuilder.create(
+                            TOOLS_NAMESPACE_URI, REQUIRED_BY_PRIVACY_SANDBOX_SDK_ATTRIBUTE_NAME)
+                        .setValueAsBoolean(requiredByPrivacySandboxSdkValue)));
+  }
+
   private static ManifestMutator withUserCountriesConditionInternal(
       ImmutableList<String> codes, Optional<Boolean> exclude) {
     XmlProtoElementBuilder userCountries =
@@ -896,6 +957,26 @@ public final class ManifestProtoUtils {
                                 .setValueAsString(name))));
   }
 
+  private static ManifestMutator withActivity(String activityName, String categoryName) {
+    return withActivity(
+        activityName,
+        activity ->
+            activity.addChildElement(
+                XmlProtoElementBuilder.create("intent-filter")
+                    .addChildElement(
+                        XmlProtoElementBuilder.create("action")
+                            .addAttribute(
+                                XmlProtoAttributeBuilder.createAndroidAttribute(
+                                        NAME_ATTRIBUTE_NAME, NAME_RESOURCE_ID)
+                                    .setValueAsString("android.intent.action.MAIN")))
+                    .addChildElement(
+                        XmlProtoElementBuilder.create("category")
+                            .addAttribute(
+                                XmlProtoAttributeBuilder.createAndroidAttribute(
+                                        NAME_ATTRIBUTE_NAME, NAME_RESOURCE_ID)
+                                    .setValueAsString(categoryName)))));
+  }
+
   public static ManifestMutator withCustomThemeActivity(String name, int themeRefId) {
     return withActivity(
         name,
@@ -908,24 +989,11 @@ public final class ManifestProtoUtils {
   }
 
   public static ManifestMutator withMainActivity(String activityName) {
-    return withActivity(
-        activityName,
-        activity ->
-            activity.addChildElement(
-                XmlProtoElementBuilder.create("intent-filter")
-                    .addChildElement(
-                        XmlProtoElementBuilder.create("action")
-                            .addAttribute(
-                                XmlProtoAttributeBuilder.createAndroidAttribute(
-                                        NAME_ATTRIBUTE_NAME, NAME_RESOURCE_ID)
-                                    .setValueAsString("android.intent.action.MAIN"))
-                            .addChildElement(
-                                XmlProtoElementBuilder.create("category")
-                                    .addAttribute(
-                                        XmlProtoAttributeBuilder.createAndroidAttribute(
-                                                NAME_ATTRIBUTE_NAME, NAME_RESOURCE_ID)
-                                            .setValueAsString(
-                                                "android.intent.category.LAUNCHER"))))));
+    return withActivity(activityName, "android.intent.category.LAUNCHER");
+  }
+
+  public static ManifestMutator withMainTvActivity(String activityName) {
+    return withActivity(activityName, "android.intent.category.LEANBACK_LAUNCHER");
   }
 
   public static ManifestMutator withNativeActivity(String libName) {
@@ -950,6 +1018,77 @@ public final class ManifestProtoUtils {
                                     .setValueAsString(libName))));
   }
 
+  /** Adds an <sdk-library> element to an SDK Bundle manifest. */
+  public static ManifestMutator withSdkLibraryElement(String sdkPackageName, int versionMajor) {
+    return manifestElement ->
+        manifestElement
+            .getOrCreateChildElement(APPLICATION_ELEMENT_NAME)
+            .getOrCreateChildElement(SDK_LIBRARY_ELEMENT_NAME)
+            .addAttribute(
+                createAndroidAttribute(NAME_ATTRIBUTE_NAME, NAME_RESOURCE_ID)
+                    .setValueAsString(sdkPackageName))
+            .addAttribute(
+                createAndroidAttribute(SDK_VERSION_MAJOR_ATTRIBUTE_NAME, VERSION_MAJOR_RESOURCE_ID)
+                    .setValueAsDecimalInteger(versionMajor));
+  }
+
+  /** Adds an <uses-sdk-library> element. */
+  public static ManifestMutator withUsesSdkLibraryElement(
+      String sdkPackageName, int versionMajor, String certDigest) {
+    return manifestElement ->
+        manifestElement
+            .getOrCreateChildElement(APPLICATION_ELEMENT_NAME)
+            .getOrCreateChildElement(USES_SDK_LIBRARY_ELEMENT_NAME)
+            .addAttribute(
+                createAndroidAttribute(NAME_ATTRIBUTE_NAME, NAME_RESOURCE_ID)
+                    .setValueAsString(sdkPackageName))
+            .addAttribute(
+                createAndroidAttribute(SDK_VERSION_MAJOR_ATTRIBUTE_NAME, VERSION_MAJOR_RESOURCE_ID)
+                    .setValueAsString(String.valueOf(versionMajor)))
+            .addAttribute(
+                createAndroidAttribute(
+                        CERTIFICATE_DIGEST_ATTRIBUTE_NAME, CERTIFICATE_DIGEST_RESOURCE_ID)
+                    .setValueAsString(certDigest));
+  }
+
+  /** Adds a <property> element to an SDK Bundle manifest. */
+  public static ManifestMutator withSdkPatchVersionProperty(int patchVersion) {
+    return manifestElement ->
+        manifestElement
+            .getOrCreateChildElement(APPLICATION_ELEMENT_NAME)
+            .getOrCreateChildElement(PROPERTY_ELEMENT_NAME)
+            .addAttribute(
+                createAndroidAttribute(NAME_ATTRIBUTE_NAME, NAME_RESOURCE_ID)
+                    .setValueAsString(SDK_PATCH_VERSION_ATTRIBUTE_NAME))
+            .addAttribute(
+                createAndroidAttribute(VALUE_ATTRIBUTE_NAME, VALUE_RESOURCE_ID)
+                    .setValueAsDecimalInteger(patchVersion));
+  }
+
+  /** Adds a {@value #PERMISSION_ELEMENT_NAME} element to the manifest. */
+  public static ManifestMutator withPermission() {
+    return manifestElement ->
+        manifestElement.addChildElement(XmlProtoElementBuilder.create(PERMISSION_ELEMENT_NAME));
+  }
+
+  /** Adds a {@value #PERMISSION_GROUP_ELEMENT_NAME} element to the manifest. */
+  public static ManifestMutator withPermissionGroup() {
+    return manifestElement ->
+        manifestElement.addChildElement(
+            XmlProtoElementBuilder.create(PERMISSION_GROUP_ELEMENT_NAME));
+  }
+
+  /** Adds a {@value #PERMISSION_TREE_ELEMENT_NAME} element to the manifest. */
+  public static ManifestMutator withPermissionTree() {
+    return manifestElement ->
+        manifestElement.addChildElement(
+            XmlProtoElementBuilder.create(PERMISSION_TREE_ELEMENT_NAME));
+  }
+
+  public static ManifestMutator withCustomChildElement(XmlProtoElementBuilder applicationElement) {
+    return manifestElement -> manifestElement.addChildElement(applicationElement);
+  }
+
   /** Defined solely for readability. */
   public interface ManifestMutator extends Consumer<XmlProtoElementBuilder> {}
 
@@ -966,6 +1105,21 @@ public final class ManifestProtoUtils {
     return defaultManifest
         .applyMutators(manifestMutators)
         .equals(defaultManifest.applyMutators(ImmutableList.of(otherManifestMutator)));
+  }
+
+  /** Adds an <uses-feature> element. */
+  public static ManifestMutator withUsesFeatureElement(String usesFeatureNameValue) {
+    return manifestElement ->
+        manifestElement.addChildElement(
+            new XmlProtoElementBuilder(
+                xmlElement(
+                    USES_FEATURE_ELEMENT_NAME,
+                    xmlAttribute(
+                        ANDROID_NAMESPACE_URI,
+                        NAME_ATTRIBUTE_NAME,
+                        NAME_RESOURCE_ID,
+                        usesFeatureNameValue))
+                    .toBuilder()));
   }
 
   // Do not instantiate.

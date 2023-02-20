@@ -20,13 +20,14 @@ import static com.android.tools.build.bundletool.model.targeting.TargetingUtils.
 import static com.android.tools.build.bundletool.model.utils.TargetingProtoUtils.lPlusVariantTargeting;
 import static com.android.tools.build.bundletool.model.utils.TargetingProtoUtils.sdkVersionFrom;
 import static com.android.tools.build.bundletool.model.utils.Versions.ANDROID_L_API_VERSION;
+import static com.android.tools.build.bundletool.model.utils.Versions.ANDROID_S_V2_API_VERSION;
 import static com.android.tools.build.bundletool.model.version.VersionGuardedFeature.PIN_LOWEST_DENSITY_OF_EACH_STYLE_TO_MASTER;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.primitives.Ints.max;
 
 import com.android.aapt.ConfigurationOuterClass.Configuration;
-import com.android.bundle.Config.BundleConfig;
 import com.android.bundle.Targeting.ApkTargeting;
 import com.android.bundle.Targeting.SdkVersion;
 import com.android.bundle.Targeting.SdkVersionTargeting;
@@ -34,7 +35,6 @@ import com.android.bundle.Targeting.VariantTargeting;
 import com.android.tools.build.bundletool.mergers.SameTargetingMerger;
 import com.android.tools.build.bundletool.model.AndroidManifest;
 import com.android.tools.build.bundletool.model.AppBundle;
-import com.android.tools.build.bundletool.model.BundleMetadata;
 import com.android.tools.build.bundletool.model.BundleModule;
 import com.android.tools.build.bundletool.model.ManifestEditor;
 import com.android.tools.build.bundletool.model.ManifestMutator;
@@ -43,7 +43,7 @@ import com.android.tools.build.bundletool.model.ModuleSplit.SplitType;
 import com.android.tools.build.bundletool.model.OptimizationDimension;
 import com.android.tools.build.bundletool.model.ResourceId;
 import com.android.tools.build.bundletool.model.ResourceTableEntry;
-import com.android.tools.build.bundletool.model.SourceStamp.StampType;
+import com.android.tools.build.bundletool.model.SourceStampConstants.StampType;
 import com.android.tools.build.bundletool.model.SuffixManager;
 import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
 import com.android.tools.build.bundletool.model.version.Version;
@@ -52,6 +52,7 @@ import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 import com.google.protobuf.Int32Value;
 import java.util.Optional;
 import java.util.function.Predicate;
@@ -74,20 +75,21 @@ public class ModuleSplitter {
   private final VariantTargeting variantTargeting;
   private final Optional<String> stampSource;
   private final StampType stampType;
+  private final AppBundle appBundle;
 
   private final AbiPlaceholderInjector abiPlaceholderInjector;
   private final PinSpecInjector pinSpecInjector;
   private final CodeTransparencyInjector codeTransparencyInjector;
+  private final BinaryArtProfilesInjector binaryArtProfilesInjector;
+  private final RuntimeEnabledSdkTableInjector runtimeEnabledSdkTableInjector;
 
   @VisibleForTesting
-  public static ModuleSplitter createForTest(BundleModule module, Version bundleVersion) {
+  public static ModuleSplitter createForTest(
+      BundleModule module, AppBundle appBundle, Version bundleVersion) {
     return new ModuleSplitter(
         module,
         bundleVersion,
-        AppBundle.buildFromModules(
-            ImmutableList.of(module),
-            BundleConfig.getDefaultInstance(),
-            BundleMetadata.builder().build()),
+        appBundle,
         ApkGenerationConfiguration.getDefaultInstance(),
         lPlusVariantTargeting(),
         /* allModuleNames= */ ImmutableSet.of(),
@@ -144,12 +146,15 @@ public class ModuleSplitter {
       StampType stampType) {
     this.module = checkNotNull(module);
     this.bundleVersion = checkNotNull(bundleVersion);
+    this.appBundle = appBundle;
     this.apkGenerationConfiguration = checkNotNull(apkGenerationConfiguration);
     this.variantTargeting = checkNotNull(variantTargeting);
     this.abiPlaceholderInjector =
         new AbiPlaceholderInjector(apkGenerationConfiguration.getAbisForPlaceholderLibs());
     this.pinSpecInjector = new PinSpecInjector(module);
     this.codeTransparencyInjector = new CodeTransparencyInjector(appBundle);
+    this.binaryArtProfilesInjector = new BinaryArtProfilesInjector(appBundle);
+    this.runtimeEnabledSdkTableInjector = new RuntimeEnabledSdkTableInjector(appBundle);
     this.allModuleNames = allModuleNames;
     this.stampSource = stampSource;
     this.stampType = stampType;
@@ -166,6 +171,9 @@ public class ModuleSplitter {
       return splitModuleInternal().stream()
           .map(this::removeSplitName)
           .map(this::addPlaceHolderNativeLibsToBaseModule)
+          .map(this::addUsesSdkLibraryTagsToMainSplitOfBaseModule)
+          .map(this::sanitizeManifestEntriesRequiredByPrivacySandboxSdk)
+          .map(this::overrideMinSdkVersionOfSdkRuntimeVariant)
           .collect(toImmutableList());
     }
   }
@@ -180,14 +188,87 @@ public class ModuleSplitter {
     }
   }
 
+  private ModuleSplit addUsesSdkLibraryTagsToMainSplitOfBaseModule(ModuleSplit moduleSplit) {
+    if (!appBundle.getRuntimeEnabledSdkDependencies().isEmpty()
+        && variantTargeting.getSdkRuntimeTargeting().getRequiresSdkRuntime()
+        && moduleSplit.isBaseModuleSplit()
+        && moduleSplit.isMasterSplit()) {
+      return moduleSplit.addUsesSdkLibraryElements(
+          appBundle.getRuntimeEnabledSdkDependencies().values());
+    }
+    return moduleSplit;
+  }
+
+  private ModuleSplit overrideMinSdkVersionOfSdkRuntimeVariant(ModuleSplit moduleSplit) {
+    if (variantTargeting.getSdkRuntimeTargeting().getRequiresSdkRuntime()
+        && moduleSplit.isMasterSplit()) {
+      return moduleSplit.overrideMinSdkVersionForSdkSandbox();
+    }
+    return moduleSplit;
+  }
+
+  /**
+   * If the variant is SdkRuntime variant, this method deletes elements that have {@link
+   * AndroidManifest#REQUIRED_BY_PRIVACY_SANDBOX_SDK_ATTRIBUTE_NAME} attribute with value {@code
+   * true} from the manifest of the main split of the base module.
+   *
+   * <p>For any variant, this method also deletes {@link
+   * AndroidManifest#REQUIRED_BY_PRIVACY_SANDBOX_SDK_ATTRIBUTE_NAME} attributes from the manifest of
+   * the main split of the base module.
+   *
+   * <p>This method is no-op if split is not the main split of the base module.
+   */
+  private ModuleSplit sanitizeManifestEntriesRequiredByPrivacySandboxSdk(ModuleSplit moduleSplit) {
+    if (appBundle.getRuntimeEnabledSdkDependencies().isEmpty()
+        || !moduleSplit.isBaseModuleSplit()
+        || !moduleSplit.isMasterSplit()) {
+      return moduleSplit;
+    }
+    if (variantTargeting.getSdkRuntimeTargeting().getRequiresSdkRuntime()) {
+      return removeRequiredByPrivacySandboxSdkAttributes(
+          removeElementsRequiredByPrivacySandboxSdk(moduleSplit));
+    }
+    return removeRequiredByPrivacySandboxSdkAttributes(moduleSplit);
+  }
+
+  private ModuleSplit removeElementsRequiredByPrivacySandboxSdk(ModuleSplit moduleSplit) {
+    AndroidManifest manifest = moduleSplit.getAndroidManifest();
+    ManifestEditor editor = manifest.toEditor();
+    editor.removeElementsRequiredByPrivacySandboxSdk();
+    return moduleSplit.toBuilder().setAndroidManifest(editor.save()).build();
+  }
+
+  private ModuleSplit removeRequiredByPrivacySandboxSdkAttributes(ModuleSplit moduleSplit) {
+    AndroidManifest manifest = moduleSplit.getAndroidManifest();
+    ManifestEditor editor = manifest.toEditor();
+    editor.removeRequiredByPrivacySandboxSdkAttributes();
+    return moduleSplit.toBuilder().setAndroidManifest(editor.save()).build();
+  }
+
   /** Common modifications to both the instant and installed splits. */
   private ImmutableList<ModuleSplit> splitModuleInternal() {
-    ImmutableList<ModuleSplit> moduleSplits =
-        runSplitters().stream()
+    ImmutableList<ModuleSplit> moduleSplits = runSplitters();
+    int baseModuleMinSdk =
+        apkGenerationConfiguration.getEnableBaseModuleMinSdkAsDefaultTargeting()
+                && appBundle.hasBaseModule()
+            ? appBundle.getBaseModule().getAndroidManifest().getEffectiveMinSdkVersion()
+            : 1;
+    int masterSplitMinSdk =
+        moduleSplits.stream()
+            .filter(ModuleSplit::isMasterSplit)
+            .findFirst()
+            .map(moduleSplit -> moduleSplit.getAndroidManifest().getEffectiveMinSdkVersion())
+            .orElse(1);
+    moduleSplits =
+        moduleSplits.stream()
             .map(pinSpecInjector::inject)
             .map(codeTransparencyInjector::inject)
+            .map(binaryArtProfilesInjector::inject)
+            .map(runtimeEnabledSdkTableInjector::inject)
             .map(this::addApkTargetingForSigningConfiguration)
-            .map(this::addLPlusApkTargeting)
+            .map(
+                moduleSplit ->
+                    addDefaultSdkApkTargeting(moduleSplit, masterSplitMinSdk, baseModuleMinSdk))
             .map(this::writeSplitIdInManifest)
             .map(ModuleSplit::addApplicationElementIfMissingInManifest)
             .collect(toImmutableList());
@@ -229,6 +310,13 @@ public class ModuleSplitter {
     // Other files.
     splits.add(ModuleSplit.forRoot(module, variantTargeting));
 
+    if (apkGenerationConfiguration.getEnableSparseEncodingVariant()) {
+      ImmutableList.Builder<ModuleSplit> splitsWithSparse = ImmutableList.builder();
+      splitsWithSparse.addAll(
+          splits.build().stream().map(this::applySparseEncoding).collect(toImmutableList()));
+      splits = splitsWithSparse;
+    }
+
     // Merging and making a master split.
     ImmutableList<ModuleSplit> mergedSplits =
         new SameTargetingMerger().merge(applyMasterManifestMutators(splits.build()));
@@ -241,6 +329,18 @@ public class ModuleSplitter {
     checkState(defaultTargetingSplits.size() == 1, "Expected one split with default targeting.");
 
     return mergedSplits;
+  }
+
+  private ModuleSplit applySparseEncoding(ModuleSplit split) {
+    int variantSdkTargeting =
+        Iterables.getOnlyElement(
+                split.getVariantTargeting().getSdkVersionTargeting().getValueList())
+            .getMin()
+            .getValue();
+
+    return variantSdkTargeting < ANDROID_S_V2_API_VERSION
+        ? split
+        : split.toBuilder().setSparseEncoding(true).build();
   }
 
   /* Writes the final manifest that reflects the Split ID. */
@@ -379,6 +479,14 @@ public class ModuleSplitter {
               apkGenerationConfiguration.shouldStripTargetingSuffix(
                   OptimizationDimension.DEVICE_TIER)));
     }
+    if (apkGenerationConfiguration
+        .getOptimizationDimensions()
+        .contains(OptimizationDimension.COUNTRY_SET)) {
+      assetsSplitters.add(
+          CountrySetAssetsSplitter.create(
+              apkGenerationConfiguration.shouldStripTargetingSuffix(
+                  OptimizationDimension.COUNTRY_SET)));
+    }
     return new SplittingPipeline(assetsSplitters.build());
   }
 
@@ -397,10 +505,11 @@ public class ModuleSplitter {
   }
 
   /**
-   * Adds L+ targeting to the Apk targeting of module split. If SDK targeting already exists, it's
-   * not overridden but checked that it targets no L- devices.
+   * Adds default SDK targeting to the Apk targeting of module split. If SDK targeting already
+   * exists, it's not overridden but checked that it targets no L- devices.
    */
-  private ModuleSplit addLPlusApkTargeting(ModuleSplit split) {
+  private ModuleSplit addDefaultSdkApkTargeting(
+      ModuleSplit split, int masterSplitMinSdk, int baseModuleMinSdk) {
     if (split.getApkTargeting().hasSdkVersionTargeting()) {
       checkState(
           split.getApkTargeting().getSdkVersionTargeting().getValue(0).getMin().getValue()
@@ -409,6 +518,7 @@ public class ModuleSplitter {
       return split;
     }
 
+    int defaultSdkVersion = max(masterSplitMinSdk, baseModuleMinSdk, ANDROID_L_API_VERSION);
     return split.toBuilder()
         .setApkTargeting(
             split.getApkTargeting().toBuilder()
@@ -416,7 +526,7 @@ public class ModuleSplitter {
                     SdkVersionTargeting.newBuilder()
                         .addValue(
                             SdkVersion.newBuilder()
-                                .setMin(Int32Value.newBuilder().setValue(ANDROID_L_API_VERSION))))
+                                .setMin(Int32Value.newBuilder().setValue(defaultSdkVersion))))
                 .build())
         .build();
   }

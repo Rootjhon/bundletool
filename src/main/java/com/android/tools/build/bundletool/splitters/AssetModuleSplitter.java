@@ -20,9 +20,11 @@ import static com.android.tools.build.bundletool.model.utils.Versions.ANDROID_L_
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.primitives.Ints.max;
 
 import com.android.bundle.Targeting.SdkVersion;
 import com.android.bundle.Targeting.SdkVersionTargeting;
+import com.android.tools.build.bundletool.model.AppBundle;
 import com.android.tools.build.bundletool.model.BundleModule;
 import com.android.tools.build.bundletool.model.ModuleDeliveryType;
 import com.android.tools.build.bundletool.model.ModuleSplit;
@@ -35,12 +37,16 @@ import com.google.protobuf.Int32Value;
 public class AssetModuleSplitter {
   private final BundleModule module;
   private final ApkGenerationConfiguration apkGenerationConfiguration;
+  private final AppBundle appBundle;
   private final SuffixManager suffixManager = new SuffixManager();
 
   public AssetModuleSplitter(
-      BundleModule module, ApkGenerationConfiguration apkGenerationConfiguration) {
+      BundleModule module,
+      ApkGenerationConfiguration apkGenerationConfiguration,
+      AppBundle appBundle) {
     this.module = checkNotNull(module);
     this.apkGenerationConfiguration = checkNotNull(apkGenerationConfiguration);
+    this.appBundle = checkNotNull(appBundle);
   }
 
   public ImmutableList<ModuleSplit> splitModule() {
@@ -52,8 +58,21 @@ public class AssetModuleSplitter {
 
     ImmutableList<ModuleSplit> splits = splitsBuilder.build();
     if (module.getDeliveryType().equals(ModuleDeliveryType.ALWAYS_INITIAL_INSTALL)) {
+      int baseModuleMinSdk =
+          apkGenerationConfiguration.getEnableBaseModuleMinSdkAsDefaultTargeting()
+                  && appBundle.hasBaseModule()
+              ? appBundle.getBaseModule().getAndroidManifest().getEffectiveMinSdkVersion()
+              : 1;
+      int masterSplitMinSdk =
+          splits.stream()
+              .filter(ModuleSplit::isMasterSplit)
+              .findFirst()
+              .map(split -> split.getAndroidManifest().getEffectiveMinSdkVersion())
+              .orElse(1);
       splits =
-          splits.stream().map(AssetModuleSplitter::addLPlusApkTargeting).collect(toImmutableList());
+          splits.stream()
+              .map(split -> addDefaultSdkApkTargeting(split, masterSplitMinSdk, baseModuleMinSdk))
+              .collect(toImmutableList());
     }
     return splits.stream().map(this::setAssetSliceManifest).collect(toImmutableList());
   }
@@ -76,10 +95,19 @@ public class AssetModuleSplitter {
               apkGenerationConfiguration.shouldStripTargetingSuffix(
                   OptimizationDimension.DEVICE_TIER)));
     }
+    if (apkGenerationConfiguration
+        .getOptimizationDimensions()
+        .contains(OptimizationDimension.COUNTRY_SET)) {
+      assetsSplitters.add(
+          CountrySetAssetsSplitter.create(
+              apkGenerationConfiguration.shouldStripTargetingSuffix(
+                  OptimizationDimension.COUNTRY_SET)));
+    }
     return new SplittingPipeline(assetsSplitters.build());
   }
 
-  private static ModuleSplit addLPlusApkTargeting(ModuleSplit split) {
+  private static ModuleSplit addDefaultSdkApkTargeting(
+      ModuleSplit split, int masterSplitMinSdk, int baseModuleMinSdk) {
     if (split.getApkTargeting().hasSdkVersionTargeting()) {
       checkState(
           split.getApkTargeting().getSdkVersionTargeting().getValue(0).getMin().getValue()
@@ -88,6 +116,7 @@ public class AssetModuleSplitter {
       return split;
     }
 
+    int defaultSdkVersion = max(masterSplitMinSdk, baseModuleMinSdk, ANDROID_L_API_VERSION);
     return split.toBuilder()
         .setApkTargeting(
             split.getApkTargeting().toBuilder()
@@ -95,7 +124,7 @@ public class AssetModuleSplitter {
                     SdkVersionTargeting.newBuilder()
                         .addValue(
                             SdkVersion.newBuilder()
-                                .setMin(Int32Value.newBuilder().setValue(ANDROID_L_API_VERSION))))
+                                .setMin(Int32Value.newBuilder().setValue(defaultSdkVersion))))
                 .build())
         .build();
   }

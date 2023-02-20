@@ -16,26 +16,35 @@
 
 package com.android.tools.build.bundletool.commands;
 
+import static com.android.tools.build.bundletool.commands.BuildApksCommand.ApkBuildMode.ARCHIVE;
 import static com.android.tools.build.bundletool.commands.BuildApksCommand.ApkBuildMode.DEFAULT;
 import static com.android.tools.build.bundletool.commands.BuildApksCommand.ApkBuildMode.SYSTEM;
 import static com.android.tools.build.bundletool.commands.BuildApksCommand.ApkBuildMode.UNIVERSAL;
 import static com.android.tools.build.bundletool.commands.BuildApksCommand.OutputFormat.APK_SET;
 import static com.android.tools.build.bundletool.commands.BuildApksCommand.OutputFormat.DIRECTORY;
 import static com.android.tools.build.bundletool.commands.CommandUtils.ANDROID_SERIAL_VARIABLE;
+import static com.android.tools.build.bundletool.model.utils.BundleParser.getModulesZip;
 import static com.android.tools.build.bundletool.model.utils.SdkToolsLocator.ANDROID_HOME_VARIABLE;
 import static com.android.tools.build.bundletool.model.utils.SdkToolsLocator.SYSTEM_PATH_VARIABLE;
 import static com.android.tools.build.bundletool.model.utils.files.FilePreconditions.checkFileDoesNotExist;
 import static com.android.tools.build.bundletool.model.utils.files.FilePreconditions.checkFileExistsAndExecutable;
 import static com.android.tools.build.bundletool.model.utils.files.FilePreconditions.checkFileExistsAndReadable;
+import static com.android.tools.build.bundletool.model.utils.files.FilePreconditions.checkFileHasExtension;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static java.util.Arrays.stream;
+import static java.util.stream.Collectors.joining;
 
 import com.android.apksig.SigningCertificateLineage;
 import com.android.apksig.apk.ApkFormatException;
 import com.android.apksig.util.DataSource;
 import com.android.apksig.util.DataSources;
 import com.android.bundle.Devices.DeviceSpec;
+import com.android.bundle.RuntimeEnabledSdkConfigProto.LocalDeploymentRuntimeEnabledSdkConfig;
+import com.android.bundle.RuntimeEnabledSdkConfigProto.RuntimeEnabledSdk;
 import com.android.tools.build.bundletool.androidtools.Aapt2Command;
+import com.android.tools.build.bundletool.androidtools.P7ZipCommand;
 import com.android.tools.build.bundletool.commands.CommandHelp.CommandDescription;
 import com.android.tools.build.bundletool.commands.CommandHelp.FlagDescription;
 import com.android.tools.build.bundletool.device.AdbServer;
@@ -43,13 +52,15 @@ import com.android.tools.build.bundletool.device.DeviceSpecParser;
 import com.android.tools.build.bundletool.flags.Flag;
 import com.android.tools.build.bundletool.flags.ParsedFlags;
 import com.android.tools.build.bundletool.io.TempDirectory;
-import com.android.tools.build.bundletool.io.ZipReader;
 import com.android.tools.build.bundletool.model.ApkListener;
 import com.android.tools.build.bundletool.model.ApkModifier;
 import com.android.tools.build.bundletool.model.AppBundle;
+import com.android.tools.build.bundletool.model.BundleModule;
 import com.android.tools.build.bundletool.model.KeystoreProperties;
 import com.android.tools.build.bundletool.model.OptimizationDimension;
 import com.android.tools.build.bundletool.model.Password;
+import com.android.tools.build.bundletool.model.SdkAsar;
+import com.android.tools.build.bundletool.model.SdkBundle;
 import com.android.tools.build.bundletool.model.SignerConfig;
 import com.android.tools.build.bundletool.model.SigningConfiguration;
 import com.android.tools.build.bundletool.model.SigningConfigurationProvider;
@@ -59,34 +70,43 @@ import com.android.tools.build.bundletool.model.exceptions.InvalidBundleExceptio
 import com.android.tools.build.bundletool.model.exceptions.InvalidCommandException;
 import com.android.tools.build.bundletool.model.utils.DefaultSystemEnvironmentProvider;
 import com.android.tools.build.bundletool.model.utils.SystemEnvironmentProvider;
+import com.android.tools.build.bundletool.model.utils.files.BufferedIo;
 import com.android.tools.build.bundletool.model.utils.files.FileUtils;
 import com.android.tools.build.bundletool.preprocessors.AppBundlePreprocessorManager;
-import com.android.tools.build.bundletool.preprocessors.AppBundleRecompressor;
 import com.android.tools.build.bundletool.preprocessors.DaggerAppBundlePreprocessorComponent;
-import com.android.tools.build.bundletool.splitters.DexCompressionSplitter;
 import com.android.tools.build.bundletool.validation.AppBundleValidator;
+import com.android.tools.build.bundletool.validation.SdkAsarValidator;
+import com.android.tools.build.bundletool.validation.SdkBundleValidator;
 import com.android.tools.build.bundletool.validation.SubValidator;
 import com.google.auto.value.AutoValue;
 import com.google.common.base.Ascii;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableListMultimap;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Maps;
+import com.google.common.io.Closer;
 import com.google.common.io.MoreFiles;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.protobuf.util.JsonFormat;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.io.RandomAccessFile;
+import java.io.Reader;
 import java.io.UncheckedIOException;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
+import java.util.Collection;
+import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.concurrent.Executors;
 import java.util.logging.Logger;
-import java.util.stream.Collectors;
 import java.util.zip.ZipException;
 import java.util.zip.ZipFile;
 
@@ -155,19 +175,22 @@ public abstract class BuildApksCommand {
   private static final Flag<ImmutableSet<String>> MODULES_FLAG = Flag.stringSet("modules");
 
   private static final Flag<Path> DEVICE_SPEC_FLAG = Flag.path("device-spec");
+  private static final Flag<Boolean> FUSE_ONLY_DEVICE_MATCHING_MODULES_FLAG =
+      Flag.booleanFlag("fuse-only-device-matching-modules");
   private static final Flag<ImmutableSet<SystemApkOption>> SYSTEM_APK_OPTIONS =
       Flag.enumSet("system-apk-options", SystemApkOption.class);
   private static final Flag<Integer> DEVICE_TIER_FLAG = Flag.nonNegativeInteger("device-tier");
+  private static final Flag<String> COUNTRY_SET_FLAG = Flag.string("country-set");
 
   private static final Flag<Boolean> VERBOSE_FLAG = Flag.booleanFlag("verbose");
+
+  private static final Flag<Path> P7ZIP_PATH_FLAG = Flag.path("7zip");
 
   // Signing-related flags: should match flags from apksig library.
   private static final Flag<Path> KEYSTORE_FLAG = Flag.path("ks");
   private static final Flag<String> KEY_ALIAS_FLAG = Flag.string("ks-key-alias");
   private static final Flag<Password> KEYSTORE_PASSWORD_FLAG = Flag.password("ks-pass");
   private static final Flag<Password> KEY_PASSWORD_FLAG = Flag.password("key-pass");
-  private static final Flag<Integer> MINIMUM_V3_ROTATION_API_VERSION_FLAG =
-      Flag.positiveInteger("min-v3-rotation-api-version");
 
   // SourceStamp-related flags.
   private static final Flag<Boolean> CREATE_STAMP_FLAG = Flag.booleanFlag("create-stamp");
@@ -176,10 +199,27 @@ public abstract class BuildApksCommand {
   private static final Flag<String> STAMP_KEY_ALIAS_FLAG = Flag.string("stamp-key-alias");
   private static final Flag<Password> STAMP_KEY_PASSWORD_FLAG = Flag.password("stamp-key-pass");
   private static final Flag<String> STAMP_SOURCE_FLAG = Flag.string("stamp-source");
+  private static final Flag<Boolean> STAMP_EXCLUDE_TIMESTAMP =
+      Flag.booleanFlag("stamp-exclude-timestamp");
 
   // Key-rotation-related flags.
+  private static final Flag<Integer> MINIMUM_V3_ROTATION_API_VERSION_FLAG =
+      Flag.positiveInteger("min-v3-rotation-api-version");
+  private static final Flag<Integer> ROTATION_MINIMUM_SDK_VERSION_FLAG =
+      Flag.positiveInteger("rotation-min-sdk-version");
   private static final Flag<Path> LINEAGE_FLAG = Flag.path("lineage");
   private static final Flag<Path> OLDEST_SIGNER_FLAG = Flag.path("oldest-signer");
+
+  // Runtime-enabled-SDK-related flags.
+  private static final Flag<ImmutableSet<Path>> RUNTIME_ENABLED_SDK_BUNDLE_LOCATIONS_FLAG =
+      Flag.pathSet("sdk-bundles");
+  private static final Flag<ImmutableSet<Path>> RUNTIME_ENABLED_SDK_ARCHIVE_LOCATIONS_FLAG =
+      Flag.pathSet("sdk-archives");
+  private static final Flag<Path> LOCAL_DEPLOYMENT_RUNTIME_ENABLED_SDK_CONFIG_FLAG =
+      Flag.path("local-runtime-enabled-sdk-config");
+
+  // Archive APK related flags.
+  private static final Flag<String> APP_STORE_PACKAGE_NAME_FLAG = Flag.string("store-package");
 
   private static final String APK_SET_ARCHIVE_EXTENSION = "apks";
 
@@ -188,18 +228,6 @@ public abstract class BuildApksCommand {
 
   // Number embedded at the beginning of a zip file to indicate its file format.
   private static final int ZIP_MAGIC = 0x04034b50;
-
-  /**
-   * Whether the new APK serializer is enabled.
-   *
-   * <p>Can be overridden using the system property "bundletool.serializer.zipflinger" set to
-   * "true".
-   */
-  private static final boolean ENABLE_NEW_APK_SERIALIZER =
-      SystemEnvironmentProvider.DEFAULT_PROVIDER
-          .getProperty("bundletool.serializer.zipflinger")
-          .map(Boolean::parseBoolean)
-          .orElse(true);
 
   public abstract Path getBundlePath();
 
@@ -213,7 +241,11 @@ public abstract class BuildApksCommand {
 
   public abstract Optional<DeviceSpec> getDeviceSpec();
 
+  public abstract boolean getFuseOnlyDeviceMatchingModules();
+
   public abstract Optional<Integer> getDeviceTier();
+
+  public abstract Optional<String> getCountrySet();
 
   public abstract ImmutableSet<SystemApkOption> getSystemApkOptions();
 
@@ -266,7 +298,20 @@ public abstract class BuildApksCommand {
 
   public abstract Optional<Long> getAssetModulesVersionOverride();
 
-  public abstract boolean getEnableNewApkSerializer();
+  public abstract boolean getEnableApkSerializerWithoutBundleRecompression();
+
+  public abstract Optional<P7ZipCommand> getP7ZipCommand();
+
+  public abstract ImmutableSet<Path> getRuntimeEnabledSdkBundlePaths();
+
+  public abstract ImmutableSet<Path> getRuntimeEnabledSdkArchivePaths();
+
+  public abstract Optional<LocalDeploymentRuntimeEnabledSdkConfig>
+      getLocalDeploymentRuntimeEnabledSdkConfig();
+
+  public abstract Optional<String> getAppStorePackageName();
+
+  public abstract boolean getEnableBaseModuleMinSdkAsDefaultTargeting();
 
   public static Builder builder() {
     return new AutoValue_BuildApksCommand.Builder()
@@ -278,9 +323,13 @@ public abstract class BuildApksCommand {
         .setVerbose(false)
         .setOptimizationDimensions(ImmutableSet.of())
         .setModules(ImmutableSet.of())
+        .setFuseOnlyDeviceMatchingModules(false)
         .setExtraValidators(ImmutableList.of())
         .setSystemApkOptions(ImmutableSet.of())
-        .setEnableNewApkSerializer(ENABLE_NEW_APK_SERIALIZER);
+        .setEnableApkSerializerWithoutBundleRecompression(true)
+        .setRuntimeEnabledSdkBundlePaths(ImmutableSet.of())
+        .setRuntimeEnabledSdkArchivePaths(ImmutableSet.of())
+        .setEnableBaseModuleMinSdkAsDefaultTargeting(false);
   }
 
   /** Builder for the {@link BuildApksCommand}. */
@@ -347,11 +396,19 @@ public abstract class BuildApksCommand {
       return setDeviceSpec(DeviceSpecParser.parsePartialDeviceSpec(deviceSpecFile));
     }
 
+    public abstract Builder setFuseOnlyDeviceMatchingModules(boolean enabled);
+
     /**
      * Sets the device tier to use for APK matching. This will override the device tier of the given
      * device spec.
      */
     public abstract Builder setDeviceTier(Integer deviceTier);
+
+    /**
+     * Sets the country set to use for APK matching. This will override the country set of the given
+     * device spec.
+     */
+    public abstract Builder setCountrySet(String countrySet);
 
     /** Sets options to generated APKs in system mode. */
     public abstract Builder setSystemApkOptions(ImmutableSet<SystemApkOption> options);
@@ -415,6 +472,7 @@ public abstract class BuildApksCommand {
      * <p>Optional. The caller is responsible for providing a service that accepts new tasks, and
      * for shutting it down afterwards.
      */
+    @CanIgnoreReturnValue
     public Builder setExecutorService(ListeningExecutorService executorService) {
       setExecutorServiceInternal(executorService);
       setExecutorServiceCreatedByBundleTool(false);
@@ -480,7 +538,49 @@ public abstract class BuildApksCommand {
     /** If present, will replace the version of the asset modules with the provided value. */
     public abstract Builder setAssetModulesVersionOverride(long value);
 
-    public abstract Builder setEnableNewApkSerializer(boolean enabled);
+    public abstract Builder setEnableApkSerializerWithoutBundleRecompression(boolean value);
+
+    /** Provides a wrapper around the execution of the 7zip commands. */
+    public abstract Builder setP7ZipCommand(P7ZipCommand value);
+
+    /**
+     * Provides paths to {@link SdkBundle}s for the runtime-enabled SDKs that the {@link AppBundle}
+     * depends on. Each file must have extension ".asb".
+     *
+     * <p>Can not be set together with {@link #setRuntimeEnabledSdkArchivePaths(ImmutableSet)}.
+     */
+    public abstract Builder setRuntimeEnabledSdkBundlePaths(ImmutableSet<Path> sdkBundlePaths);
+
+    /**
+     * Provides paths to {@link SdkAsar}s for the runtime-enabled SDKs that the {@link AppBundle}
+     * depends on. Each file must have extension ".asar".
+     *
+     * <p>Can not be set together with {@link #setRuntimeEnabledSdkBundlePaths(ImmutableSet)}.
+     */
+    public abstract Builder setRuntimeEnabledSdkArchivePaths(ImmutableSet<Path> sdkArchivePaths);
+
+    /**
+     * Options for overriding parts of runtime-enabled SDK dependency configuration of the app for
+     * local deployment and testing.
+     */
+    public abstract Builder setLocalDeploymentRuntimeEnabledSdkConfig(
+        LocalDeploymentRuntimeEnabledSdkConfig localDeploymentRuntimeEnabledSdkConfig);
+
+    /**
+     * Sets package name of an app store that will be called by archived app to redownload the
+     * application.
+     *
+     * <p>Can only be used in ARCHIVE mode.
+     *
+     * <p>PlayStore package (com.android.vending) is used by default.
+     */
+    public abstract Builder setAppStorePackageName(String appStorePackageName);
+
+    /**
+     * If true, will set default min sdk version targeting for generated splits as min sdk of base
+     * module.
+     */
+    public abstract Builder setEnableBaseModuleMinSdkAsDefaultTargeting(boolean value);
 
     abstract BuildApksCommand autoBuild();
 
@@ -493,6 +593,7 @@ public abstract class BuildApksCommand {
       checkState(
           !getSigningConfiguration().isPresent() || !getSigningConfigurationProvider().isPresent(),
           "Only one of SigningConfiguration or SigningConfigurationProvider should be set.");
+
       getSigningConfiguration()
           .flatMap(SigningConfiguration::getMinimumV3RotationApiVersion)
           .ifPresent(this::setMinSdkForAdditionalVariantWithV3Rotation);
@@ -554,6 +655,14 @@ public abstract class BuildApksCommand {
         }
       }
 
+      if (command.getFuseOnlyDeviceMatchingModules() && !command.getDeviceSpec().isPresent()) {
+        throw InvalidCommandException.builder()
+            .withInternalMessage(
+                "Device spec must be provided when using '%s' flag.",
+                FUSE_ONLY_DEVICE_MATCHING_MODULES_FLAG.getName())
+            .build();
+      }
+
       if (command.getGenerateOnlyForConnectedDevice() && command.getDeviceSpec().isPresent()) {
         throw InvalidCommandException.builder()
             .withInternalMessage(
@@ -577,6 +686,16 @@ public abstract class BuildApksCommand {
             .build();
       }
 
+      if (command.getCountrySet().isPresent()
+          && !command.getGenerateOnlyForConnectedDevice()
+          && !command.getDeviceSpec().isPresent()) {
+        throw InvalidCommandException.builder()
+            .withInternalMessage(
+                "Setting --country-set requires using either the --connected-device or the"
+                    + " --device-spec flag.")
+            .build();
+      }
+
       if (command.getOutputFormat().equals(APK_SET)) {
         if (!APK_SET_ARCHIVE_EXTENSION.equals(
             MoreFiles.getFileExtension(command.getOutputFile()))) {
@@ -595,6 +714,34 @@ public abstract class BuildApksCommand {
             .withInternalMessage(
                 "Modules can be only set when running with '%s' or '%s' mode flag.",
                 UNIVERSAL.getLowerCaseName(), SYSTEM.getLowerCaseName())
+            .build();
+      }
+
+      if (command.getAppStorePackageName().isPresent()
+          && !command.getApkBuildMode().equals(ARCHIVE)) {
+        throw InvalidCommandException.builder()
+            .withInternalMessage(
+                "Providing custom store package is only possible when running with '%s' mode flag.",
+                ARCHIVE.getLowerCaseName())
+            .build();
+      }
+
+      if (!command.getRuntimeEnabledSdkBundlePaths().isEmpty()
+          && !command.getRuntimeEnabledSdkArchivePaths().isEmpty()) {
+        throw InvalidCommandException.builder()
+            .withInternalMessage(
+                "Command can only set either runtime-enabled SDK bundles or runtime-enabled SDK"
+                    + " archives, but both were set.")
+            .build();
+      }
+
+      if (command.getLocalDeploymentRuntimeEnabledSdkConfig().isPresent()
+          && command.getRuntimeEnabledSdkBundlePaths().isEmpty()
+          && command.getRuntimeEnabledSdkArchivePaths().isEmpty()) {
+        throw InvalidCommandException.builder()
+            .withInternalMessage(
+                "Using --local-deployment-runtime-enabled-sdk-config flag requires either"
+                    + " --sdk-bundles or --sdk-archives flag to be also present.")
             .build();
       }
       return command;
@@ -665,6 +812,10 @@ public abstract class BuildApksCommand {
             ? DeviceSpecParser::parsePartialDeviceSpec
             : DeviceSpecParser::parseDeviceSpec;
 
+    FUSE_ONLY_DEVICE_MATCHING_MODULES_FLAG
+        .getValue(flags)
+        .ifPresent(buildApksCommand::setFuseOnlyDeviceMatchingModules);
+
     Optional<ImmutableSet<SystemApkOption>> systemApkOptions = SYSTEM_APK_OPTIONS.getValue(flags);
     if (systemApkOptions.isPresent() && !apkBuildMode.equals(SYSTEM)) {
       throw InvalidCommandException.builder()
@@ -679,8 +830,54 @@ public abstract class BuildApksCommand {
         .map(deviceSpecParser)
         .ifPresent(buildApksCommand::setDeviceSpec);
     DEVICE_TIER_FLAG.getValue(flags).ifPresent(buildApksCommand::setDeviceTier);
+    COUNTRY_SET_FLAG.getValue(flags).ifPresent(buildApksCommand::setCountrySet);
     MODULES_FLAG.getValue(flags).ifPresent(buildApksCommand::setModules);
     VERBOSE_FLAG.getValue(flags).ifPresent(buildApksCommand::setVerbose);
+    P7ZIP_PATH_FLAG
+        .getValue(flags)
+        .ifPresent(
+            p7zipPath -> {
+              int numThreads = MAX_THREADS_FLAG.getValue(flags).orElse(DEFAULT_THREAD_POOL_SIZE);
+              buildApksCommand.setP7ZipCommand(
+                  P7ZipCommand.defaultP7ZipCommand(p7zipPath, numThreads));
+            });
+
+    if (RUNTIME_ENABLED_SDK_BUNDLE_LOCATIONS_FLAG.getValue(flags).isPresent()
+        && RUNTIME_ENABLED_SDK_ARCHIVE_LOCATIONS_FLAG.getValue(flags).isPresent()) {
+      throw InvalidCommandException.builder()
+          .withInternalMessage(
+              "Only one of '%s' and '%s' flags can be set.",
+              RUNTIME_ENABLED_SDK_BUNDLE_LOCATIONS_FLAG.getName(),
+              RUNTIME_ENABLED_SDK_ARCHIVE_LOCATIONS_FLAG.getName())
+          .build();
+    }
+    RUNTIME_ENABLED_SDK_BUNDLE_LOCATIONS_FLAG
+        .getValue(flags)
+        .ifPresent(buildApksCommand::setRuntimeEnabledSdkBundlePaths);
+    RUNTIME_ENABLED_SDK_ARCHIVE_LOCATIONS_FLAG
+        .getValue(flags)
+        .ifPresent(buildApksCommand::setRuntimeEnabledSdkArchivePaths);
+
+    if (LOCAL_DEPLOYMENT_RUNTIME_ENABLED_SDK_CONFIG_FLAG.getValue(flags).isPresent()
+        && !RUNTIME_ENABLED_SDK_BUNDLE_LOCATIONS_FLAG.getValue(flags).isPresent()
+        && !RUNTIME_ENABLED_SDK_ARCHIVE_LOCATIONS_FLAG.getValue(flags).isPresent()) {
+      throw InvalidCommandException.builder()
+          .withInternalMessage(
+              "'%s' flag can only be set together with '%s' or '%s' flags.",
+              LOCAL_DEPLOYMENT_RUNTIME_ENABLED_SDK_CONFIG_FLAG.getName(),
+              RUNTIME_ENABLED_SDK_BUNDLE_LOCATIONS_FLAG.getName(),
+              RUNTIME_ENABLED_SDK_ARCHIVE_LOCATIONS_FLAG.getName())
+          .build();
+    }
+
+    LOCAL_DEPLOYMENT_RUNTIME_ENABLED_SDK_CONFIG_FLAG
+        .getValue(flags)
+        .ifPresent(
+            configPath ->
+                buildApksCommand.setLocalDeploymentRuntimeEnabledSdkConfig(
+                    parseLocalRuntimeEnabledSdkConfig(configPath)));
+
+    APP_STORE_PACKAGE_NAME_FLAG.getValue(flags).ifPresent(buildApksCommand::setAppStorePackageName);
 
     flags.checkNoUnknownFlags();
 
@@ -697,59 +894,45 @@ public abstract class BuildApksCommand {
       FileUtils.createDirectories(outputDirectory);
     }
 
-    try (TempDirectory tempDir = new TempDirectory(getClass().getSimpleName())) {
-      Path bundlePath;
-      // The new APK serializer relies on the compression of entries in the App Bundle.
-      // Unfortunately, we don't know the compression level that was used when the bundle was built,
-      // so we re-compress all entries with our desired compression level.
-      // Exception is made when the device spec is specified, we only need a fraction of the
-      // entries, so re-compressing all entries would be a waste of CPU.
-      boolean recompressAppBundle = getEnableNewApkSerializer() && !getDeviceSpec().isPresent();
-      if (recompressAppBundle) {
-        bundlePath = tempDir.getPath().resolve("recompressed.aab");
-        new AppBundleRecompressor(getExecutorService())
-            .recompressAppBundle(getBundlePath().toFile(), bundlePath.toFile());
-      } else {
-        bundlePath = getBundlePath();
-      }
+    try (TempDirectory tempDir = new TempDirectory(getClass().getSimpleName());
+        ZipFile bundleZip = new ZipFile(getBundlePath().toFile());
+        Closer closer = Closer.create()) {
+      AppBundleValidator bundleValidator = AppBundleValidator.create(getExtraValidators());
+      bundleValidator.validateFile(bundleZip);
 
-      try (ZipFile bundleZip = new ZipFile(bundlePath.toFile());
-          ZipReader zipReader = ZipReader.createFromFile(bundlePath)) {
-        AppBundleValidator bundleValidator = AppBundleValidator.create(getExtraValidators());
-        bundleValidator.validateFile(bundleZip);
+      AppBundle appBundle = AppBundle.buildFromZip(bundleZip);
+      bundleValidator.validate(appBundle);
+      ImmutableMap<String, BundleModule> sdkBundleModules =
+          getValidatedSdkModules(closer, tempDir, appBundle);
 
-        AppBundle appBundle = AppBundle.buildFromZip(bundleZip);
-        bundleValidator.validate(appBundle);
+      AppBundlePreprocessorManager appBundlePreprocessorManager =
+          DaggerAppBundlePreprocessorComponent.builder()
+              .setBuildApksCommand(this)
+              .setSdkBundleModules(sdkBundleModules)
+              .build()
+              .create();
+      AppBundle preprocessedAppBundle = appBundlePreprocessorManager.processAppBundle(appBundle);
 
-        AppBundlePreprocessorManager appBundlePreprocessorManager =
-            DaggerAppBundlePreprocessorComponent.builder()
-                .setBuildApksCommand(this)
-                .build()
-                .create();
-        AppBundle preprocessedAppBundle = appBundlePreprocessorManager.processAppBundle(appBundle);
+      BuildApksManager buildApksManager =
+          DaggerBuildApksManagerComponent.builder()
+              .setBuildApksCommand(this)
+              .setTempDirectory(tempDir)
+              .setAppBundle(preprocessedAppBundle)
+              .build()
+              .create();
+      buildApksManager.execute();
+    } catch (ZipException e) {
+      throw InvalidBundleException.builder()
+          .withCause(e)
+          .withUserMessage("The App Bundle is not a valid zip file.")
+          .build();
 
-        BuildApksManager buildApksManager =
-            DaggerBuildApksManagerComponent.builder()
-                .setBuildApksCommand(this)
-                .setTempDirectory(tempDir)
-                .setAppBundle(preprocessedAppBundle)
-                .setZipReader(zipReader)
-                .setUseBundleCompression(recompressAppBundle)
-                .build()
-                .create();
-        buildApksManager.execute();
-      } catch (ZipException e) {
-        throw InvalidBundleException.builder()
-            .withCause(e)
-            .withUserMessage("The App Bundle is not a valid zip file.")
-            .build();
-      } finally {
-        if (isExecutorServiceCreatedByBundleTool()) {
-          getExecutorService().shutdown();
-        }
-      }
     } catch (IOException e) {
       throw new UncheckedIOException("An error occurred when processing the App Bundle.", e);
+    } finally {
+      if (isExecutorServiceCreatedByBundleTool()) {
+        getExecutorService().shutdown();
+      }
     }
 
     return getOutputFile();
@@ -784,6 +967,252 @@ public abstract class BuildApksCommand {
           "Property 'adbPath' is required when 'generateOnlyForConnectedDevice' is true.");
       checkFileExistsAndExecutable(getAdbPath().get());
     }
+
+    if (!shouldGenerateSdkRuntimeVariant(getApkBuildMode())) {
+      checkArgument(
+          getRuntimeEnabledSdkBundlePaths().isEmpty(),
+          "runtimeEnabledSdkBundlePaths can not be present in '%s' mode.",
+          getApkBuildMode().name());
+      checkArgument(
+          getRuntimeEnabledSdkArchivePaths().isEmpty(),
+          "runtimeEnabledSdkArchivePaths can not be present in '%s' mode.",
+          getApkBuildMode().name());
+    }
+
+    getRuntimeEnabledSdkBundlePaths()
+        .forEach(
+            path -> {
+              checkFileExistsAndReadable(path);
+              checkFileHasExtension("ASB file", path, ".asb");
+            });
+    getRuntimeEnabledSdkArchivePaths()
+        .forEach(
+            path -> {
+              checkFileExistsAndReadable(path);
+              checkFileHasExtension("ASAR file", path, ".asar");
+            });
+  }
+
+  private ImmutableMap<String, BundleModule> getValidatedSdkModules(
+      Closer closer, TempDirectory tempDir, AppBundle appBundle) throws IOException {
+    if (!shouldGenerateSdkRuntimeVariant(getApkBuildMode())) {
+      return ImmutableMap.of();
+    }
+    if (!getRuntimeEnabledSdkArchivePaths().isEmpty()) {
+      ImmutableMap<String, SdkAsar> sdkAsars = getValidatedSdkAsarsByPackageName(closer, tempDir);
+      validateSdkAsarsMatchAppBundleDependencies(appBundle, sdkAsars);
+      return sdkAsars.entrySet().stream()
+          .collect(toImmutableMap(Entry::getKey, entry -> entry.getValue().getModule()));
+    }
+    ImmutableMap<String, SdkBundle> sdkBundles =
+        getValidatedSdkBundlesByPackageName(closer, tempDir);
+    validateSdkBundlesMatchAppBundleDependencies(appBundle, sdkBundles);
+    return sdkBundles.entrySet().stream()
+        .collect(
+            toImmutableMap(
+                Entry::getKey,
+                entry ->
+                    entry.getValue().getModule().toBuilder()
+                        .setSdkModulesConfig(entry.getValue().getSdkModulesConfig())
+                        .build()));
+  }
+
+  private ImmutableMap<String, SdkAsar> getValidatedSdkAsarsByPackageName(
+      Closer closer, TempDirectory tempDir) throws IOException {
+    ImmutableListMultimap.Builder<String, SdkAsar> sdkArchivesPerPackageNameBuilder =
+        ImmutableListMultimap.builder();
+
+    ImmutableList<Path> sdkArchivePaths = getRuntimeEnabledSdkArchivePaths().asList();
+    for (int index = 0; index < sdkArchivePaths.size(); index++) {
+      ZipFile sdkArchiveZip = closer.register(new ZipFile(sdkArchivePaths.get(index).toFile()));
+
+      Path sdkModulesZipPath = tempDir.getPath().resolve("tmp" + index);
+      ZipFile sdkModulesZip = closer.register(getModulesZip(sdkArchiveZip, sdkModulesZipPath));
+      SdkAsarValidator.validateModulesFile(sdkModulesZip);
+
+      SdkAsar sdkArchive = SdkAsar.buildFromZip(sdkArchiveZip, sdkModulesZip, sdkModulesZipPath);
+      sdkArchivesPerPackageNameBuilder.put(sdkArchive.getPackageName(), sdkArchive);
+    }
+
+    ImmutableMap<String, Collection<SdkAsar>> sdkArchivesPerPackageName =
+        sdkArchivesPerPackageNameBuilder.build().asMap();
+
+    sdkArchivesPerPackageName
+        .entrySet()
+        .forEach(
+            entry -> {
+              // App can not depend on multiple SDK archives with the same package name.
+              if (entry.getValue().size() > 1) {
+                throw InvalidCommandException.builder()
+                    .withInternalMessage(
+                        "Received multiple SDK archives with the same package name: %s.",
+                        entry.getKey())
+                    .build();
+              }
+            });
+    return ImmutableMap.copyOf(
+        Maps.transformValues(sdkArchivesPerPackageName, Iterables::getOnlyElement));
+  }
+
+  private static void validateSdkAsarsMatchAppBundleDependencies(
+      AppBundle appBundle, ImmutableMap<String, SdkAsar> sdkArchives) {
+    appBundle
+        .getRuntimeEnabledSdkDependencies()
+        .keySet()
+        .forEach(
+            sdkPackageName -> {
+              if (!sdkArchives.containsKey(sdkPackageName)) {
+                throw InvalidCommandException.builder()
+                    .withInternalMessage(
+                        "App bundle depends on SDK '%s', but no ASAR was provided.", sdkPackageName)
+                    .build();
+              }
+              RuntimeEnabledSdk sdkDependencyFromAppBundle =
+                  appBundle.getRuntimeEnabledSdkDependencies().get(sdkPackageName);
+              SdkAsar sdkArchive = sdkArchives.get(sdkPackageName);
+              if (sdkDependencyFromAppBundle.getVersionMajor() != sdkArchive.getMajorVersion()) {
+                throw InvalidCommandException.builder()
+                    .withInternalMessage(
+                        "App bundle depends on SDK '%s' with major version '%d', but provided SDK"
+                            + " archive has major version '%d'.",
+                        sdkPackageName,
+                        sdkDependencyFromAppBundle.getVersionMajor(),
+                        sdkArchive.getMajorVersion())
+                    .build();
+              }
+              if (sdkDependencyFromAppBundle.getVersionMinor() != sdkArchive.getMinorVersion()) {
+                throw InvalidCommandException.builder()
+                    .withInternalMessage(
+                        "App bundle depends on SDK '%s' with minor version '%d', but provided SDK"
+                            + " archive has minor version '%d'.",
+                        sdkPackageName,
+                        sdkDependencyFromAppBundle.getVersionMinor(),
+                        sdkArchive.getMinorVersion())
+                    .build();
+              }
+              if (!sdkDependencyFromAppBundle
+                  .getCertificateDigest()
+                  .equals(sdkArchive.getCertificateDigest())) {
+                throw InvalidCommandException.builder()
+                    .withInternalMessage(
+                        "App bundle depends on SDK '%s' with signing certificate '%s', but provided"
+                            + " ASAR is for SDK with signing certificate '%s'.",
+                        sdkPackageName,
+                        sdkDependencyFromAppBundle.getCertificateDigest(),
+                        sdkArchive.getCertificateDigest())
+                    .build();
+              }
+            });
+
+    sdkArchives
+        .keySet()
+        .forEach(
+            sdkPackageName -> {
+              if (!appBundle.getRuntimeEnabledSdkDependencies().containsKey(sdkPackageName)) {
+                throw InvalidCommandException.builder()
+                    .withInternalMessage(
+                        "App bundle does not depend on SDK '%s', but SDK archive was provided.",
+                        sdkPackageName)
+                    .build();
+              }
+            });
+  }
+
+  private ImmutableMap<String, SdkBundle> getValidatedSdkBundlesByPackageName(
+      Closer closer, TempDirectory tempDir) throws IOException {
+    SdkBundleValidator sdkBundleValidator = SdkBundleValidator.create();
+    ImmutableListMultimap.Builder<String, SdkBundle> sdkBundlesPerPackageNameBuilder =
+        ImmutableListMultimap.builder();
+    ImmutableList<Path> sdkBundlePaths = getRuntimeEnabledSdkBundlePaths().asList();
+    for (int index = 0; index < sdkBundlePaths.size(); index++) {
+      Path sdkBundlePath = sdkBundlePaths.get(index);
+      ZipFile sdkBundleZip = closer.register(new ZipFile(sdkBundlePath.toFile()));
+      sdkBundleValidator.validateFile(sdkBundleZip);
+
+      ZipFile sdkModulesZip =
+          closer.register(getModulesZip(sdkBundleZip, tempDir.getPath().resolve("tmp" + index)));
+      sdkBundleValidator.validateModulesFile(sdkModulesZip);
+
+      // SdkBundle#getVersionCode is not used in `build-apks`. It does not matter what
+      // value we set here, so we are just setting 0.
+      SdkBundle sdkBundle =
+          SdkBundle.buildFromZip(sdkBundleZip, sdkModulesZip, /* versionCode= */ 0);
+      sdkBundlesPerPackageNameBuilder.put(sdkBundle.getPackageName(), sdkBundle);
+    }
+
+    ImmutableMap<String, Collection<SdkBundle>> sdkBundlesPerPackageName =
+        sdkBundlesPerPackageNameBuilder.build().asMap();
+
+    sdkBundlesPerPackageName
+        .entrySet()
+        .forEach(
+            entry -> {
+              // App can not depend on multiple SDK bundles with the same package name.
+              if (entry.getValue().size() > 1) {
+                throw InvalidCommandException.builder()
+                    .withInternalMessage(
+                        "Received multiple SDK bundles with the same package name: %s.",
+                        entry.getKey())
+                    .build();
+              }
+              // Validate format of each SDK bundle.
+              sdkBundleValidator.validate(Iterables.getOnlyElement(entry.getValue()));
+            });
+    return ImmutableMap.copyOf(
+        Maps.transformValues(sdkBundlesPerPackageName, Iterables::getOnlyElement));
+  }
+
+  private static void validateSdkBundlesMatchAppBundleDependencies(
+      AppBundle appBundle, ImmutableMap<String, SdkBundle> sdkBundles) {
+    appBundle
+        .getRuntimeEnabledSdkDependencies()
+        .keySet()
+        .forEach(
+            sdkPackageName -> {
+              if (!sdkBundles.containsKey(sdkPackageName)) {
+                throw InvalidCommandException.builder()
+                    .withInternalMessage(
+                        "App bundle depends on SDK '%s', but no SDK bundle was provided.",
+                        sdkPackageName)
+                    .build();
+              }
+              RuntimeEnabledSdk sdkDependencyFromAppBundle =
+                  appBundle.getRuntimeEnabledSdkDependencies().get(sdkPackageName);
+              SdkBundle sdkBundle = sdkBundles.get(sdkPackageName);
+              if (sdkDependencyFromAppBundle.getVersionMajor() != sdkBundle.getMajorVersion()) {
+                throw InvalidCommandException.builder()
+                    .withInternalMessage(
+                        "App bundle depends on SDK '%s' with major version '%d', but provided SDK"
+                            + " bundle has major version '%d'.",
+                        sdkPackageName,
+                        sdkDependencyFromAppBundle.getVersionMajor(),
+                        sdkBundle.getMajorVersion())
+                    .build();
+              }
+              if (sdkDependencyFromAppBundle.getVersionMinor() != sdkBundle.getMinorVersion()) {
+                throw InvalidCommandException.builder()
+                    .withInternalMessage(
+                        "App bundle depends on SDK '%s' with minor version '%d', but provided SDK"
+                            + " bundle has minor version '%d'.",
+                        sdkPackageName,
+                        sdkDependencyFromAppBundle.getVersionMinor(),
+                        sdkBundle.getMinorVersion())
+                    .build();
+              }
+            });
+
+    sdkBundles
+        .keySet()
+        .forEach(
+            sdkPackageName -> {
+              if (!appBundle.getRuntimeEnabledSdkDependencies().containsKey(sdkPackageName)) {
+                throw InvalidCommandException.builder()
+                    .withInternalMessage(
+                        "App bundle does not depend on SDK '%s', but SDK bundle was provided.",
+                        sdkPackageName)
+                    .build();
+              }
+            });
   }
 
   /**
@@ -853,15 +1282,17 @@ public abstract class BuildApksCommand {
                 .setExampleValue(joinFlagOptions(ApkBuildMode.values()))
                 .setOptional(true)
                 .setDescription(
-                    "Specifies which mode to run '%s' command against. Acceptable values are '%s'. "
-                        + "If not set or set to '%s' we generate split, standalone and instant "
-                        + "APKs. If set to '%s' we generate universal APK. If set to '%s' we "
-                        + "generate APKs for system image.",
+                    "Specifies which mode to run '%s' command against. Acceptable values are '%s'."
+                        + " If not set or set to '%s' we generate split, standalone and instant"
+                        + " APKs. If set to '%s' we generate universal APK. If set to '%s' we"
+                        + " generate APKs for system image. If set to %s we generate the archived"
+                        + " APK.",
                     BuildApksCommand.COMMAND_NAME,
                     joinFlagOptions(ApkBuildMode.values()),
                     DEFAULT.getLowerCaseName(),
                     UNIVERSAL.getLowerCaseName(),
-                    SYSTEM.getLowerCaseName())
+                    SYSTEM.getLowerCaseName(),
+                    ARCHIVE.getLowerCaseName())
                 .build())
         .addFlag(
             FlagDescription.builder()
@@ -940,6 +1371,16 @@ public abstract class BuildApksCommand {
                 .build())
         .addFlag(
             FlagDescription.builder()
+                .setFlagName(ROTATION_MINIMUM_SDK_VERSION_FLAG.getName())
+                .setExampleValue("30")
+                .setOptional(true)
+                .setDescription(
+                    "The minimum Android version for signing the generated APKs with rotation. The"
+                        + " original signing key for the APK will be used for all previous platform"
+                        + " versions.")
+                .build())
+        .addFlag(
+            FlagDescription.builder()
                 .setFlagName(LINEAGE_FLAG.getName())
                 .setExampleValue("path/to/existing/lineage")
                 .setOptional(true)
@@ -997,7 +1438,7 @@ public abstract class BuildApksCommand {
                 .setDescription(
                     "If set, will generate APK Set optimized for the connected device. The "
                         + "generated APK Set will only be installable on that specific class of "
-                        + "devices. This flag should be only be set with --%s=%s flag.",
+                        + "devices. This flag should only be set with --%s=%s flag.",
                     BUILD_MODE_FLAG.getName(), DEFAULT.getLowerCaseName())
                 .build())
         .addFlag(
@@ -1040,11 +1481,32 @@ public abstract class BuildApksCommand {
                 .setExampleValue("low")
                 .setOptional(true)
                 .setDescription(
-                    "Device tier to use for APK matching. This flag should be only be set with"
+                    "Device tier to use for APK matching. This flag should only be set with"
                         + " --%s or --%s flags. If a device spec with a device tier is provided,"
                         + " the value specified here will override the value set in the device"
                         + " spec.",
                     DEVICE_SPEC_FLAG.getName(), CONNECTED_DEVICE_FLAG.getName())
+                .build())
+        .addFlag(
+            FlagDescription.builder()
+                .setFlagName(COUNTRY_SET_FLAG.getName())
+                .setExampleValue("country_set_name")
+                .setOptional(true)
+                .setDescription(
+                    "Country set to use for APK matching. This flag should only be set with"
+                        + " --%s or --%s flags. If a device spec with a country set is provided,"
+                        + " the value specified here will override the value set in the device"
+                        + " spec.",
+                    DEVICE_SPEC_FLAG.getName(), CONNECTED_DEVICE_FLAG.getName())
+                .build())
+        .addFlag(
+            FlagDescription.builder()
+                .setFlagName(FUSE_ONLY_DEVICE_MATCHING_MODULES_FLAG.getName())
+                .setOptional(true)
+                .setDescription(
+                    "When set, conditional modules with fused attribute will be fused into the"
+                        + " base module if they match the the device given by %s",
+                    DEVICE_SPEC_FLAG.getName())
                 .build())
         .addFlag(
             FlagDescription.builder()
@@ -1074,6 +1536,14 @@ public abstract class BuildApksCommand {
                 .setDescription(
                     "If set, prints extra information about the command execution in the standard"
                         + " output.")
+                .build())
+        .addFlag(
+            FlagDescription.builder()
+                .setFlagName(P7ZIP_PATH_FLAG.getName())
+                .setOptional(true)
+                .setDescription(
+                    "Path to the 7zip binary to use. Mandatory if Android App Bundle requires 7zip"
+                        + " compression.")
                 .build())
         .addFlag(
             FlagDescription.builder()
@@ -1140,14 +1610,64 @@ public abstract class BuildApksCommand {
                     "Name of source generating the stamp. For stores, it is their package names."
                         + " For locally generated stamp, it is 'local'.")
                 .build())
+        .addFlag(
+            FlagDescription.builder()
+                .setFlagName(STAMP_EXCLUDE_TIMESTAMP.getName())
+                .setExampleValue("true")
+                .setOptional(true)
+                .setDescription(
+                    "If set, a timestamp indicating the time of signing will be excluded from the"
+                        + " generated stamp embedded in the generated APKs.")
+                .build())
+        .addFlag(
+            FlagDescription.builder()
+                .setFlagName(RUNTIME_ENABLED_SDK_BUNDLE_LOCATIONS_FLAG.getName())
+                .setExampleValue("path/to/bundle1.asb,path/to/bundle2.asb")
+                .setOptional(true)
+                .setDescription(
+                    "Paths to SDK bundles for the runtime-enabled SDKs that the App Bundle depends"
+                        + " on, separated by commas. Each SDK bundle must have an extension .asb."
+                        + " Can not be used together with the '%s' flag.",
+                    RUNTIME_ENABLED_SDK_ARCHIVE_LOCATIONS_FLAG.getName())
+                .build())
+        .addFlag(
+            FlagDescription.builder()
+                .setFlagName(RUNTIME_ENABLED_SDK_ARCHIVE_LOCATIONS_FLAG.getName())
+                .setExampleValue("path/to/asar1.asar,path/to/asar2.asar")
+                .setOptional(true)
+                .setDescription(
+                    "Paths to SDK archives for the runtime-enabled SDKs that the App Bundle depends"
+                        + " on, separated by commas. Each SDK archive must have an extension"
+                        + " .asar. Can not be used together with the '%s' flag.",
+                    RUNTIME_ENABLED_SDK_BUNDLE_LOCATIONS_FLAG.getName())
+                .build())
+        .addFlag(
+            FlagDescription.builder()
+                .setFlagName(LOCAL_DEPLOYMENT_RUNTIME_ENABLED_SDK_CONFIG_FLAG.getName())
+                .setExampleValue("path/to/config.json")
+                .setOptional(true)
+                .setDescription(
+                    "Path to config file that contains options for overriding parts of"
+                        + " runtime-enabled SDK dependency configuration of the app bundle. Can"
+                        + " only be used if either '%s' or '%s' is set.",
+                    RUNTIME_ENABLED_SDK_BUNDLE_LOCATIONS_FLAG.getName(),
+                    RUNTIME_ENABLED_SDK_ARCHIVE_LOCATIONS_FLAG.getName())
+                .build())
+        .addFlag(
+            FlagDescription.builder()
+                .setFlagName(APP_STORE_PACKAGE_NAME_FLAG.getName())
+                .setExampleValue("com.android.vending")
+                .setOptional(true)
+                .setDescription(
+                    "Package name of an app store that will be called by archived app to redownload"
+                        + " the application. Play Store is called by default."
+                        + " Can only be provided for ARCHIVE mode.")
+                .build())
         .build();
   }
 
   private static String joinFlagOptions(Enum<?>... flagOptions) {
-    return Arrays.stream(flagOptions)
-        .map(Enum::name)
-        .map(String::toLowerCase)
-        .collect(Collectors.joining("|"));
+    return stream(flagOptions).map(Enum::name).map(String::toLowerCase).collect(joining("|"));
   }
 
   private static void populateSigningConfigurationFromFlags(
@@ -1161,6 +1681,7 @@ public abstract class BuildApksCommand {
     Optional<Password> keystorePassword = KEYSTORE_PASSWORD_FLAG.getValue(flags);
     Optional<Password> keyPassword = KEY_PASSWORD_FLAG.getValue(flags);
     Optional<Integer> minV3RotationApi = MINIMUM_V3_ROTATION_API_VERSION_FLAG.getValue(flags);
+    Optional<Integer> rotationMinSdkVersion = ROTATION_MINIMUM_SDK_VERSION_FLAG.getValue(flags);
 
     if (keystorePath.isPresent() && keyAlias.isPresent()) {
       SignerConfig signerConfig =
@@ -1169,7 +1690,8 @@ public abstract class BuildApksCommand {
       SigningConfiguration.Builder builder =
           SigningConfiguration.builder()
               .setSignerConfig(signerConfig)
-              .setMinimumV3RotationApiVersion(minV3RotationApi);
+              .setMinimumV3RotationApiVersion(minV3RotationApi)
+              .setRotationMinSdkVersion(rotationMinSdkVersion);
       populateLineageFromFlags(builder, flags);
       buildApksCommand.setSigningConfiguration(builder.build());
     } else if (keystorePath.isPresent() && !keyAlias.isPresent()) {
@@ -1258,6 +1780,7 @@ public abstract class BuildApksCommand {
       SystemEnvironmentProvider systemEnvironmentProvider) {
     boolean createStamp = CREATE_STAMP_FLAG.getValue(flags).orElse(false);
     Optional<String> stampSource = STAMP_SOURCE_FLAG.getValue(flags);
+    Optional<Boolean> stampExcludeTimestamp = STAMP_EXCLUDE_TIMESTAMP.getValue(flags);
 
     if (!createStamp) {
       return;
@@ -1268,6 +1791,8 @@ public abstract class BuildApksCommand {
     sourceStamp.setSigningConfiguration(
         getStampSigningConfiguration(flags, out, systemEnvironmentProvider));
     stampSource.ifPresent(sourceStamp::setSource);
+    stampExcludeTimestamp.ifPresent(
+        excludeTimestamp -> sourceStamp.setIncludeTimestamp(!excludeTimestamp));
 
     buildApksCommand.setSourceStamp(sourceStamp.build());
   }
@@ -1332,5 +1857,31 @@ public abstract class BuildApksCommand {
 
     return SigningConfiguration.extractFromKeystore(
         keystorePath, keyAlias, keystorePassword, keyPassword);
+  }
+
+  private static LocalDeploymentRuntimeEnabledSdkConfig parseLocalRuntimeEnabledSdkConfig(
+      Path configPath) {
+    try (Reader configReader = BufferedIo.reader(configPath)) {
+      LocalDeploymentRuntimeEnabledSdkConfig.Builder configBuilder =
+          LocalDeploymentRuntimeEnabledSdkConfig.newBuilder();
+      JsonFormat.parser().merge(configReader, configBuilder);
+      return configBuilder.build();
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  private static boolean shouldGenerateSdkRuntimeVariant(ApkBuildMode mode) {
+    switch (mode) {
+      case DEFAULT:
+      case UNIVERSAL:
+      case SYSTEM:
+      case PERSISTENT:
+        return true;
+      case INSTANT:
+      case ARCHIVE:
+        return false;
+    }
+    throw new IllegalStateException();
   }
 }

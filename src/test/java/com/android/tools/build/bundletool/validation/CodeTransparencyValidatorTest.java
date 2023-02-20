@@ -18,6 +18,7 @@ package com.android.tools.build.bundletool.validation;
 import static com.android.bundle.CodeTransparencyOuterClass.CodeRelatedFile.Type.DEX;
 import static com.android.bundle.CodeTransparencyOuterClass.CodeRelatedFile.Type.NATIVE_LIBRARY;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withSharedUserId;
 import static com.google.common.truth.Truth.assertThat;
 import static org.jose4j.jws.AlgorithmIdentifiers.RSA_USING_SHA256;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -28,8 +29,11 @@ import com.android.tools.build.bundletool.io.AppBundleSerializer;
 import com.android.tools.build.bundletool.model.AppBundle;
 import com.android.tools.build.bundletool.model.BundleMetadata;
 import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
+import com.android.tools.build.bundletool.model.version.BundleToolVersion;
 import com.android.tools.build.bundletool.testing.AppBundleBuilder;
 import com.android.tools.build.bundletool.testing.CertificateFactory;
+import com.android.tools.build.bundletool.testing.CodeRelatedFileBuilderHelper;
+import com.android.tools.build.bundletool.testing.ManifestProtoUtils.ManifestMutator;
 import com.google.common.hash.Hashing;
 import com.google.common.io.ByteSource;
 import com.google.common.io.CharSource;
@@ -70,7 +74,7 @@ public final class CodeTransparencyValidatorTest {
   public void setUp() throws Exception {
     bundlePath = tmp.getRoot().toPath().resolve("bundle.aab");
     kpg = KeyPairGenerator.getInstance("RSA");
-    kpg.initialize(/* keySize= */ 3072);
+    kpg.initialize(/* keysize= */ 3072);
     KeyPair keyPair = kpg.genKeyPair();
     privateKey = keyPair.getPrivate();
     certificate =
@@ -90,6 +94,9 @@ public final class CodeTransparencyValidatorTest {
                     .setSha256(
                         ByteSource.wrap(NATIVE_LIB_FILE_CONTENT).hash(Hashing.sha256()).toString())
                     .setApkPath(NATIVE_LIB_PATH))
+            .addCodeRelatedFile(
+                CodeRelatedFileBuilderHelper.archivedDexCodeRelatedFile(
+                    BundleToolVersion.getCurrentVersion()))
             .build();
   }
 
@@ -132,7 +139,13 @@ public final class CodeTransparencyValidatorTest {
 
   @Test
   public void transparencyVerificationFailed_codeModified() throws Exception {
-    createBundle(bundlePath, CodeTransparency.getDefaultInstance());
+    createBundle(
+        bundlePath,
+        CodeTransparency.newBuilder()
+            .addCodeRelatedFile(
+                CodeRelatedFileBuilderHelper.archivedDexCodeRelatedFile(
+                    BundleToolVersion.getCurrentVersion()))
+            .build());
     AppBundle bundle = AppBundle.buildFromZip(new ZipFile(bundlePath.toFile()));
 
     Exception e =
@@ -151,7 +164,17 @@ public final class CodeTransparencyValidatorTest {
                 + " base/lib/arm64-v8a/libnative.so]");
   }
 
-  private void createBundle(Path path, CodeTransparency codeTransparency) throws Exception {
+  @Test
+  public void transparencyVerified_bundleHasSharedUserId() throws Exception {
+    createBundle(bundlePath, validCodeTransparency, withSharedUserId("sharedUserId"));
+    AppBundle bundle = AppBundle.buildFromZip(new ZipFile(bundlePath.toFile()));
+
+    new CodeTransparencyValidator().validateBundle(bundle);
+  }
+
+  private void createBundle(
+      Path path, CodeTransparency codeTransparency, ManifestMutator... manifestMutators)
+      throws Exception {
     String transparencyPayload = JsonFormat.printer().print(codeTransparency);
     AppBundleBuilder appBundle =
         new AppBundleBuilder()
@@ -159,7 +182,7 @@ public final class CodeTransparencyValidatorTest {
                 "base",
                 module ->
                     module
-                        .setManifest(androidManifest("com.test.app"))
+                        .setManifest(androidManifest("com.test.app", manifestMutators))
                         .addFile(DEX_PATH, DEX_FILE_CONTENT)
                         .addFile(NATIVE_LIB_PATH, NATIVE_LIB_FILE_CONTENT))
             .addMetadataFile(

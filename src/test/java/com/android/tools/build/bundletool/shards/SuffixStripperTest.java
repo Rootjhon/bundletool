@@ -19,11 +19,14 @@ package com.android.tools.build.bundletool.shards;
 import static com.android.bundle.Targeting.TextureCompressionFormat.TextureCompressionFormatAlias.ATC;
 import static com.android.bundle.Targeting.TextureCompressionFormat.TextureCompressionFormatAlias.ETC1_RGB8;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.alternativeCountrySetTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.alternativeTextureCompressionTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.apkCountrySetTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkDeviceTierTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkTextureTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.assets;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.assetsDirectoryTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.countrySetTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.deviceTierTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.targetedAssetsDirectory;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.textureCompressionTargeting;
@@ -51,7 +54,7 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class SuffixStripperTest {
 
-  private static final byte[] DUMMY_CONTENT = new byte[1];
+  private static final byte[] TEST_CONTENT = new byte[1];
 
   @Test
   public void applySuffixStripping_tcf_suffixStrippingEnabled() {
@@ -65,11 +68,11 @@ public class SuffixStripperTest {
             .setEntries(
                 ImmutableList.of(
                     createModuleEntryForFile(
-                        "assets/textures/untargeted_texture.dat", DUMMY_CONTENT),
+                        "assets/textures/untargeted_texture.dat", TEST_CONTENT),
                     createModuleEntryForFile(
-                        "assets/textures#tcf_etc1/etc1_texture.dat", DUMMY_CONTENT),
+                        "assets/textures#tcf_etc1/etc1_texture.dat", TEST_CONTENT),
                     createModuleEntryForFile(
-                        "assets/textures#tcf_atc/atc_texture.dat", DUMMY_CONTENT)))
+                        "assets/textures#tcf_atc/atc_texture.dat", TEST_CONTENT)))
             .setAssetsConfig(
                 assets(
                     targetedAssetsDirectory(
@@ -117,11 +120,11 @@ public class SuffixStripperTest {
             .setEntries(
                 ImmutableList.of(
                     createModuleEntryForFile(
-                        "assets/textures/untargeted_texture.dat", DUMMY_CONTENT),
+                        "assets/textures/untargeted_texture.dat", TEST_CONTENT),
                     createModuleEntryForFile(
-                        "assets/textures#tcf_etc1/etc1_texture.dat", DUMMY_CONTENT),
+                        "assets/textures#tcf_etc1/etc1_texture.dat", TEST_CONTENT),
                     createModuleEntryForFile(
-                        "assets/textures#tcf_atc/atc_texture.dat", DUMMY_CONTENT)))
+                        "assets/textures#tcf_atc/atc_texture.dat", TEST_CONTENT)))
             .setAssetsConfig(
                 assets(
                     targetedAssetsDirectory(
@@ -167,11 +170,11 @@ public class SuffixStripperTest {
             .setEntries(
                 ImmutableList.of(
                     createModuleEntryForFile(
-                        "assets/textures/untargeted_texture.dat", DUMMY_CONTENT),
+                        "assets/textures/untargeted_texture.dat", TEST_CONTENT),
                     createModuleEntryForFile(
-                        "assets/textures#tcf_etc1/etc1_texture.dat", DUMMY_CONTENT),
+                        "assets/textures#tcf_etc1/etc1_texture.dat", TEST_CONTENT),
                     createModuleEntryForFile(
-                        "assets/textures#tcf_atc/atc_texture.dat", DUMMY_CONTENT)))
+                        "assets/textures#tcf_atc/atc_texture.dat", TEST_CONTENT)))
             .setAssetsConfig(
                 assets(
                     targetedAssetsDirectory(
@@ -217,9 +220,8 @@ public class SuffixStripperTest {
             .setMasterSplit(true)
             .setEntries(
                 ImmutableList.of(
-                    createModuleEntryForFile("assets/img#tier_0/low_res_image.dat", DUMMY_CONTENT),
-                    createModuleEntryForFile(
-                        "assets/img#tier_1/high_res_image.dat", DUMMY_CONTENT)))
+                    createModuleEntryForFile("assets/img#tier_0/low_res_image.dat", TEST_CONTENT),
+                    createModuleEntryForFile("assets/img#tier_1/high_res_image.dat", TEST_CONTENT)))
             .setAssetsConfig(
                 assets(
                     targetedAssetsDirectory(
@@ -263,9 +265,8 @@ public class SuffixStripperTest {
             .setMasterSplit(true)
             .setEntries(
                 ImmutableList.of(
-                    createModuleEntryForFile("assets/img#tier_0/low_res_image.dat", DUMMY_CONTENT),
-                    createModuleEntryForFile(
-                        "assets/img#tier_1/high_res_image.dat", DUMMY_CONTENT)))
+                    createModuleEntryForFile("assets/img#tier_0/low_res_image.dat", TEST_CONTENT),
+                    createModuleEntryForFile("assets/img#tier_1/high_res_image.dat", TEST_CONTENT)))
             .setAssetsConfig(
                 assets(
                     targetedAssetsDirectory(
@@ -300,6 +301,149 @@ public class SuffixStripperTest {
   }
 
   @Test
+  public void applySuffixStripping_countrySet_suffixStrippingEnabled() {
+    ModuleSplit split =
+        ModuleSplit.builder()
+            .setModuleName(BundleModuleName.create("base"))
+            .setApkTargeting(ApkTargeting.getDefaultInstance())
+            .setVariantTargeting(VariantTargeting.getDefaultInstance())
+            .setAndroidManifest(AndroidManifest.create(androidManifest("com.test.app")))
+            .setMasterSplit(true)
+            .setEntries(
+                ImmutableList.of(
+                    createModuleEntryForFile(
+                        "assets/img#countries_latam/img_latam.dat", TEST_CONTENT),
+                    createModuleEntryForFile("assets/img#countries_sea/img_sea.dat", TEST_CONTENT)))
+            .setAssetsConfig(
+                assets(
+                    targetedAssetsDirectory(
+                        "assets/img#countries_latam",
+                        assetsDirectoryTargeting(
+                            countrySetTargeting(
+                                ImmutableList.of("latam"), ImmutableList.of("sea")))),
+                    targetedAssetsDirectory(
+                        "assets/img#countries_sea",
+                        assetsDirectoryTargeting(
+                            countrySetTargeting(
+                                ImmutableList.of("sea"), ImmutableList.of("latam"))))))
+            .build();
+
+    ModuleSplit strippedSplit =
+        SuffixStripper.createForDimension(TargetingDimension.COUNTRY_SET)
+            .applySuffixStripping(
+                split,
+                SuffixStripping.newBuilder().setDefaultSuffix("latam").setEnabled(true).build());
+
+    assertThat(strippedSplit.getEntries()).hasSize(1);
+    assertThat(strippedSplit.getEntries().get(0).getPath())
+        .isEqualTo(ZipPath.create("assets/img/img_latam.dat"));
+
+    assertThat(strippedSplit.getAssetsConfig().get().getDirectoryCount()).isEqualTo(1);
+    assertThat(strippedSplit.getAssetsConfig().get().getDirectory(0).getPath())
+        .isEqualTo("assets/img");
+
+    assertThat(strippedSplit.getApkTargeting())
+        .isEqualTo(apkCountrySetTargeting(countrySetTargeting("latam")));
+    assertThat(strippedSplit.getVariantTargeting()).isEqualToDefaultInstance();
+  }
+
+  @Test
+  public void applySuffixStripping_countrySet_suffixStrippingDisabled() {
+    ModuleSplit split =
+        ModuleSplit.builder()
+            .setModuleName(BundleModuleName.create("base"))
+            .setApkTargeting(ApkTargeting.getDefaultInstance())
+            .setVariantTargeting(VariantTargeting.getDefaultInstance())
+            .setAndroidManifest(AndroidManifest.create(androidManifest("com.test.app")))
+            .setMasterSplit(true)
+            .setEntries(
+                ImmutableList.of(
+                    createModuleEntryForFile(
+                        "assets/img#countries_latam/img_latam.dat", TEST_CONTENT),
+                    createModuleEntryForFile("assets/img#countries_sea/img_sea.dat", TEST_CONTENT)))
+            .setAssetsConfig(
+                assets(
+                    targetedAssetsDirectory(
+                        "assets/img#countries_latam",
+                        assetsDirectoryTargeting(
+                            countrySetTargeting(
+                                ImmutableList.of("latam"), ImmutableList.of("sea")))),
+                    targetedAssetsDirectory(
+                        "assets/img#countries_sea",
+                        assetsDirectoryTargeting(
+                            countrySetTargeting(
+                                ImmutableList.of("sea"), ImmutableList.of("latam"))))))
+            .build();
+
+    ModuleSplit strippedSplit =
+        SuffixStripper.createForDimension(TargetingDimension.COUNTRY_SET)
+            .applySuffixStripping(
+                split,
+                SuffixStripping.newBuilder().setDefaultSuffix("latam").setEnabled(false).build());
+
+    assertThat(strippedSplit.getEntries()).hasSize(1);
+    assertThat(strippedSplit.getEntries().get(0).getPath())
+        .isEqualTo(ZipPath.create("assets/img#countries_latam/img_latam.dat"));
+
+    assertThat(strippedSplit.getAssetsConfig().get().getDirectoryCount()).isEqualTo(1);
+    assertThat(strippedSplit.getAssetsConfig().get().getDirectory(0).getPath())
+        .isEqualTo("assets/img#countries_latam");
+
+    assertThat(strippedSplit.getApkTargeting())
+        .isEqualTo(apkCountrySetTargeting(countrySetTargeting("latam")));
+    assertThat(strippedSplit.getVariantTargeting()).isEqualToDefaultInstance();
+  }
+
+  @Test
+  public void applySuffixStripping_countrySet_noDefaultSuffixSpecified_retainsFallbackAssets() {
+    ModuleSplit split =
+        ModuleSplit.builder()
+            .setModuleName(BundleModuleName.create("base"))
+            .setApkTargeting(ApkTargeting.getDefaultInstance())
+            .setVariantTargeting(VariantTargeting.getDefaultInstance())
+            .setAndroidManifest(AndroidManifest.create(androidManifest("com.test.app")))
+            .setMasterSplit(true)
+            .setEntries(
+                ImmutableList.of(
+                    createModuleEntryForFile(
+                        "assets/img#countries_latam/img_latam.dat", TEST_CONTENT),
+                    createModuleEntryForFile("assets/img#countries_sea/img_sea.dat", TEST_CONTENT),
+                    createModuleEntryForFile("assets/img/img_restOfWorld.dat", TEST_CONTENT)))
+            .setAssetsConfig(
+                assets(
+                    targetedAssetsDirectory(
+                        "assets/img#countries_latam",
+                        assetsDirectoryTargeting(
+                            countrySetTargeting(
+                                ImmutableList.of("latam"), ImmutableList.of("sea")))),
+                    targetedAssetsDirectory(
+                        "assets/img#countries_sea",
+                        assetsDirectoryTargeting(
+                            countrySetTargeting(
+                                ImmutableList.of("sea"), ImmutableList.of("latam")))),
+                    targetedAssetsDirectory(
+                        "assets/img",
+                        assetsDirectoryTargeting(
+                            alternativeCountrySetTargeting(ImmutableList.of("latam", "sea"))))))
+            .build();
+
+    ModuleSplit strippedSplit =
+        SuffixStripper.createForDimension(TargetingDimension.COUNTRY_SET)
+            .applySuffixStripping(split, SuffixStripping.newBuilder().setEnabled(true).build());
+
+    assertThat(strippedSplit.getEntries()).hasSize(1);
+    assertThat(strippedSplit.getEntries().get(0).getPath())
+        .isEqualTo(ZipPath.create("assets/img/img_restOfWorld.dat"));
+
+    assertThat(strippedSplit.getAssetsConfig().get().getDirectoryCount()).isEqualTo(1);
+    assertThat(strippedSplit.getAssetsConfig().get().getDirectory(0).getPath())
+        .isEqualTo("assets/img");
+
+    assertThat(strippedSplit.getApkTargeting()).isEqualToDefaultInstance();
+    assertThat(strippedSplit.getVariantTargeting()).isEqualToDefaultInstance();
+  }
+
+  @Test
   public void removeAssetsTargeting_tcf() {
     ModuleSplit split =
         ModuleSplit.builder()
@@ -310,10 +454,10 @@ public class SuffixStripperTest {
             .setMasterSplit(true)
             .setEntries(
                 ImmutableList.of(
-                    createModuleEntryForFile("assets/untargeted_texture.dat", DUMMY_CONTENT),
-                    createModuleEntryForFile("assets/textures#tcf_etc1/texture.dat", DUMMY_CONTENT),
+                    createModuleEntryForFile("assets/untargeted_texture.dat", TEST_CONTENT),
+                    createModuleEntryForFile("assets/textures#tcf_etc1/texture.dat", TEST_CONTENT),
                     createModuleEntryForFile(
-                        "assets/textures#tcf_etc1/other_texture.dat", DUMMY_CONTENT)))
+                        "assets/textures#tcf_etc1/other_texture.dat", TEST_CONTENT)))
             .setAssetsConfig(
                 assets(
                     targetedAssetsDirectory(

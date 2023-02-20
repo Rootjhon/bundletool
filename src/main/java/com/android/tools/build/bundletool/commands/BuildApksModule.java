@@ -20,6 +20,8 @@ import static java.lang.annotation.RetentionPolicy.RUNTIME;
 
 import com.android.bundle.Config.BundleConfig;
 import com.android.bundle.Devices.DeviceSpec;
+import com.android.bundle.RuntimeEnabledSdkConfigProto.LocalDeploymentRuntimeEnabledSdkConfig;
+import com.android.tools.build.bundletool.androidtools.P7ZipCommand;
 import com.android.tools.build.bundletool.commands.BuildApksCommand.ApkBuildMode;
 import com.android.tools.build.bundletool.device.AdbServer;
 import com.android.tools.build.bundletool.device.DeviceAnalyzer;
@@ -27,7 +29,6 @@ import com.android.tools.build.bundletool.io.ApkSerializerModule;
 import com.android.tools.build.bundletool.model.ApkListener;
 import com.android.tools.build.bundletool.model.ApkModifier;
 import com.android.tools.build.bundletool.model.DefaultSigningConfigurationProvider;
-import com.android.tools.build.bundletool.model.SigningConfiguration;
 import com.android.tools.build.bundletool.model.SigningConfigurationProvider;
 import com.android.tools.build.bundletool.model.SourceStamp;
 import com.android.tools.build.bundletool.model.version.Version;
@@ -35,6 +36,7 @@ import com.android.tools.build.bundletool.optimizations.ApkOptimizations;
 import com.android.tools.build.bundletool.optimizations.OptimizationsMerger;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.protobuf.Int32Value;
+import com.google.protobuf.StringValue;
 import dagger.Module;
 import dagger.Provides;
 import java.io.PrintStream;
@@ -47,8 +49,8 @@ import javax.inject.Qualifier;
     includes = {
       BundleConfigModule.class,
       BundletoolModule.class,
-      AppBundleModule.class,
-      ApkSerializerModule.class
+      ApkSerializerModule.class,
+      AppBundleModule.class
     })
 public final class BuildApksModule {
 
@@ -67,13 +69,6 @@ public final class BuildApksModule {
 
   @CommandScoped
   @Provides
-  @StampSigningConfig
-  static Optional<SigningConfiguration> provideStampSigningConfiguration(BuildApksCommand command) {
-    return command.getSourceStamp().map(SourceStamp::getSigningConfiguration);
-  }
-
-  @CommandScoped
-  @Provides
   static Optional<SourceStamp> provideStampSource(BuildApksCommand command) {
     return command.getSourceStamp();
   }
@@ -82,6 +77,12 @@ public final class BuildApksModule {
   @Provides
   static ListeningExecutorService provideExecutorService(BuildApksCommand command) {
     return command.getExecutorService();
+  }
+
+  @CommandScoped
+  @Provides
+  static Optional<P7ZipCommand> provideP7ZipCommand(BuildApksCommand command) {
+    return command.getP7ZipCommand();
   }
 
   @CommandScoped
@@ -145,6 +146,15 @@ public final class BuildApksModule {
                       .setDeviceTier(Int32Value.of(command.getDeviceTier().get()))
                       .build());
     }
+    if (command.getCountrySet().isPresent()) {
+      checkState(deviceSpec.isPresent(), "Country set specified but no device was provided");
+      deviceSpec =
+          deviceSpec.map(
+              spec ->
+                  spec.toBuilder()
+                      .setCountrySet(StringValue.of(command.getCountrySet().get()))
+                      .build());
+    }
     return deviceSpec;
   }
 
@@ -153,6 +163,13 @@ public final class BuildApksModule {
   @VerboseLogs
   static boolean provideVerbose(BuildApksCommand command) {
     return command.getVerbose();
+  }
+
+  @CommandScoped
+  @Provides
+  static Optional<LocalDeploymentRuntimeEnabledSdkConfig> provideLocalRuntimeEnabledSdkConfig(
+      BuildApksCommand command) {
+    return command.getLocalDeploymentRuntimeEnabledSdkConfig();
   }
 
   /**
@@ -180,13 +197,6 @@ public final class BuildApksModule {
   @Qualifier
   @Retention(RUNTIME)
   public @interface ApkSigningConfigProvider {}
-
-  /**
-   * Qualifying annotation of a {@code SigningConfiguration} for the Stamp signing configuration.
-   */
-  @Qualifier
-  @Retention(RUNTIME)
-  public @interface StampSigningConfig {}
 
   private BuildApksModule() {}
 }

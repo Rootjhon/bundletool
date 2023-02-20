@@ -18,6 +18,7 @@ package com.android.tools.build.bundletool.device;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.MoreCollectors.toOptional;
+import static java.util.stream.Collectors.partitioningBy;
 
 import com.android.bundle.Commands.ApkDescription;
 import com.android.bundle.Commands.BuildApksResult;
@@ -25,6 +26,7 @@ import com.android.bundle.Commands.Variant;
 import com.android.bundle.Devices.DeviceSpec;
 import com.android.bundle.Targeting.VariantTargeting;
 import com.google.common.collect.ImmutableList;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -34,6 +36,7 @@ public class VariantMatcher {
 
   private final ImmutableList<? extends TargetingDimensionMatcher<?>> variantMatchers;
   private final boolean matchInstant;
+  private final SdkRuntimeMatcher sdkRuntimeMatcher;
 
   public VariantMatcher(DeviceSpec deviceSpec) {
     this(deviceSpec, /* matchInstant= */ false);
@@ -50,6 +53,7 @@ public class VariantMatcher {
         new MultiAbiMatcher(deviceSpec),
         new ScreenDensityMatcher(deviceSpec),
         new TextureCompressionFormatMatcher(deviceSpec),
+        new SdkRuntimeMatcher(deviceSpec),
         matchInstant);
   }
 
@@ -59,6 +63,7 @@ public class VariantMatcher {
       MultiAbiMatcher multiAbiMatcher,
       ScreenDensityMatcher screenDensityMatcher,
       TextureCompressionFormatMatcher textureCompressionFormatMatcher,
+      SdkRuntimeMatcher sdkRuntimeMatcher,
       boolean matchInstant) {
     this.variantMatchers =
         ImmutableList.of(
@@ -66,8 +71,10 @@ public class VariantMatcher {
             abiMatcher,
             multiAbiMatcher,
             screenDensityMatcher,
-            textureCompressionFormatMatcher);
+            textureCompressionFormatMatcher,
+            sdkRuntimeMatcher);
     this.matchInstant = matchInstant;
+    this.sdkRuntimeMatcher = sdkRuntimeMatcher;
   }
 
   /**
@@ -75,10 +82,37 @@ public class VariantMatcher {
    * can match a full device-spec (generated from device-spec command).
    */
   public ImmutableList<Variant> getAllMatchingVariants(BuildApksResult buildApksResult) {
+    if (!sdkRuntimeMatcher.isDeviceDimensionPresent()
+        && sdkRuntimeMatcher.deviceSupportsSdkRuntime()) {
+      return getAllMatchingVariants(ImmutableList.copyOf(buildApksResult.getVariantList()));
+    }
+
+    // Separate SDK runtime and non-sdk runtime variants.
+    Map<Boolean, ImmutableList<Variant>> partitionedVariants =
+        buildApksResult.getVariantList().stream()
+            .collect(
+                partitioningBy(
+                    variant ->
+                        variant.getTargeting().getSdkRuntimeTargeting().getRequiresSdkRuntime(),
+                    toImmutableList()));
+
+    // First, try to match variants with SDK runtime targeting. If no SDK Runtime variant matches
+    // the device, we fall back to non-sdk runtime variants. This ordering is required because the
+    // SdkRuntimeMatcher will match a non-SDK runtime variant to a device that supports the SDK
+    // runtime, which is not optimal if there is another variant that targets the SDK runtime.
+    if (sdkRuntimeMatcher.deviceSupportsSdkRuntime()) {
+      ImmutableList<Variant> matchingSdkRuntimeVariants =
+          getAllMatchingVariants(partitionedVariants.get(true));
+      if (!matchingSdkRuntimeVariants.isEmpty()) {
+        return matchingSdkRuntimeVariants;
+      }
+    }
+    return getAllMatchingVariants(partitionedVariants.get(false));
+  }
+
+  private ImmutableList<Variant> getAllMatchingVariants(ImmutableList<Variant> variants) {
     Supplier<Stream<Variant>> variantsToMatch =
-        () ->
-            buildApksResult.getVariantList().stream()
-                .filter(variant -> isVariantInstant(variant) == matchInstant);
+        () -> variants.stream().filter(variant -> isVariantInstant(variant) == matchInstant);
 
     // Check if the device is compatible with the variants.
     variantsToMatch.get().forEach(this::checkCompatibleWithVariant);

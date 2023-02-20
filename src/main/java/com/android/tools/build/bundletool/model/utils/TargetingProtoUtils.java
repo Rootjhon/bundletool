@@ -26,6 +26,7 @@ import com.android.bundle.Targeting.AssetsDirectoryTargeting;
 import com.android.bundle.Targeting.MultiAbi;
 import com.android.bundle.Targeting.ScreenDensity;
 import com.android.bundle.Targeting.ScreenDensityTargeting;
+import com.android.bundle.Targeting.SdkRuntimeTargeting;
 import com.android.bundle.Targeting.SdkVersion;
 import com.android.bundle.Targeting.SdkVersionTargeting;
 import com.android.bundle.Targeting.TextureCompressionFormat;
@@ -59,6 +60,11 @@ public final class TargetingProtoUtils {
       alternativeTargeting
           .getDeviceTierBuilder()
           .addAllAlternatives(targeting.getDeviceTier().getValueList());
+    }
+    if (targeting.hasCountrySet()) {
+      alternativeTargeting
+          .getCountrySetBuilder()
+          .addAllAlternatives(targeting.getCountrySet().getValueList());
     }
     return alternativeTargeting.build();
   }
@@ -176,6 +182,17 @@ public final class TargetingProtoUtils {
         .collect(toImmutableSet());
   }
 
+  public static ImmutableSet<String> countrySetUniverse(ApkTargeting targeting) {
+    return Streams.concat(
+            targeting.getCountrySetTargeting().getValueList().stream(),
+            targeting.getCountrySetTargeting().getAlternativesList().stream())
+        .collect(toImmutableSet());
+  }
+
+  public static ImmutableSet<String> countrySetValues(ApkTargeting targeting) {
+    return ImmutableSet.copyOf(targeting.getCountrySetTargeting().getValueList());
+  }
+
   public static SdkVersion sdkVersionFrom(int from) {
     return SdkVersion.newBuilder().setMin(Int32Value.newBuilder().setValue(from)).build();
   }
@@ -198,6 +215,21 @@ public final class TargetingProtoUtils {
 
   public static VariantTargeting lPlusVariantTargeting() {
     return variantTargeting(sdkVersionTargeting(sdkVersionFrom(ANDROID_L_API_VERSION)));
+  }
+
+  public static VariantTargeting sdkRuntimeVariantTargeting(SdkVersion sdkVersion) {
+    return sdkRuntimeVariantTargeting(sdkVersion, /* alternativeSdkVersions= */ ImmutableSet.of());
+  }
+
+  public static VariantTargeting sdkRuntimeVariantTargeting(
+      SdkVersion sdkVersion, ImmutableSet<SdkVersion> alternativeSdkVersions) {
+    return VariantTargeting.newBuilder()
+        .setSdkRuntimeTargeting(SdkRuntimeTargeting.newBuilder().setRequiresSdkRuntime(true))
+        .setSdkVersionTargeting(
+            SdkVersionTargeting.newBuilder()
+                .addValue(sdkVersion)
+                .addAllAlternatives(alternativeSdkVersions))
+        .build();
   }
 
   public static Optional<Integer> getScreenDensityDpi(

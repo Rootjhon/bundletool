@@ -18,10 +18,12 @@ package com.android.tools.build.bundletool.model;
 
 import static com.android.tools.build.bundletool.model.AndroidManifest.ACTIVITY_ELEMENT_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.ANDROID_NAMESPACE_URI;
+import static com.android.tools.build.bundletool.model.AndroidManifest.CERTIFICATE_DIGEST_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.IS_FEATURE_SPLIT_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.NAME_RESOURCE_ID;
-import static com.android.tools.build.bundletool.model.SourceStamp.STAMP_SOURCE_METADATA_KEY;
-import static com.android.tools.build.bundletool.model.SourceStamp.STAMP_TYPE_METADATA_KEY;
+import static com.android.tools.build.bundletool.model.AndroidManifest.VERSION_MAJOR_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.SourceStampConstants.STAMP_SOURCE_METADATA_KEY;
+import static com.android.tools.build.bundletool.model.SourceStampConstants.STAMP_TYPE_METADATA_KEY;
 import static com.android.tools.build.bundletool.testing.CertificateFactory.buildSelfSignedCertificate;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withMainActivity;
@@ -32,12 +34,14 @@ import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.xmlD
 import static com.android.tools.build.bundletool.testing.TargetingUtils.abiTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.alternativeLanguageTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkAbiTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.apkCountrySetTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkDensityTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkDeviceTierTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkLanguageTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkMultiAbiTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkSanitizerTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkTextureTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.countrySetTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.deviceTierTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.lPlusVariantTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.languageTargeting;
@@ -54,6 +58,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import com.android.aapt.Resources.ResourceTable;
 import com.android.aapt.Resources.XmlElement;
 import com.android.aapt.Resources.XmlNode;
+import com.android.bundle.RuntimeEnabledSdkConfigProto.RuntimeEnabledSdk;
 import com.android.bundle.Targeting.Abi;
 import com.android.bundle.Targeting.Abi.AbiAlias;
 import com.android.bundle.Targeting.AbiTargeting;
@@ -65,26 +70,20 @@ import com.android.bundle.Targeting.ScreenDensityTargeting;
 import com.android.bundle.Targeting.TextureCompressionFormat.TextureCompressionFormatAlias;
 import com.android.bundle.Targeting.VariantTargeting;
 import com.android.tools.build.bundletool.model.ModuleSplit.SplitType;
-import com.android.tools.build.bundletool.model.SourceStamp.StampType;
+import com.android.tools.build.bundletool.model.SourceStampConstants.StampType;
 import com.android.tools.build.bundletool.model.utils.xmlproto.XmlProtoElement;
 import com.android.tools.build.bundletool.testing.BundleModuleBuilder;
 import com.android.tools.build.bundletool.testing.ManifestProtoUtils;
 import com.android.tools.build.bundletool.testing.ResourceTableBuilder;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
+import com.google.common.io.ByteSource;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
-import java.util.Optional;
-import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
@@ -95,14 +94,13 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class ModuleSplitTest {
 
-  private static final byte[] DUMMY_CONTENT = new byte[1];
+  private static final byte[] TEST_CONTENT = new byte[1];
 
   private static final int VERSION_CODE_RESOURCE_ID = 0x0101021b;
 
   private static SigningConfiguration stampSigningConfig;
 
   @Rule public final TemporaryFolder tmp = new TemporaryFolder();
-  private Path tmpDir;
 
   @BeforeClass
   public static void setUpClass() throws Exception {
@@ -111,11 +109,6 @@ public class ModuleSplitTest {
     X509Certificate certificate = buildSelfSignedCertificate(keyPair, "CN=ModuleSplitTest");
     stampSigningConfig =
         SigningConfiguration.builder().setSignerConfig(privateKey, certificate).build();
-  }
-
-  @Before
-  public void setUp() {
-    tmpDir = tmp.getRoot().toPath();
   }
 
   @Test
@@ -264,6 +257,38 @@ public class ModuleSplitTest {
             .build();
     deviceTieredSplit = deviceTieredSplit.writeSplitIdInManifest(deviceTieredSplit.getSuffix());
     assertThat(deviceTieredSplit.getAndroidManifest().getSplitId()).hasValue("config.tier_0");
+  }
+
+  @Test
+  public void moduleCountrySetSplitSuffixAndName() {
+    ModuleSplit countrySetSplit =
+        ModuleSplit.builder()
+            .setModuleName(BundleModuleName.create("base"))
+            .setVariantTargeting(lPlusVariantTargeting())
+            .setApkTargeting(apkCountrySetTargeting(countrySetTargeting("latam")))
+            .setMasterSplit(false)
+            .setAndroidManifest(AndroidManifest.create(androidManifest("com.test.app")))
+            .build();
+    countrySetSplit = countrySetSplit.writeSplitIdInManifest(countrySetSplit.getSuffix());
+    assertThat(countrySetSplit.getAndroidManifest().getSplitId())
+        .hasValue("config.countries_latam");
+  }
+
+  @Test
+  public void moduleCountrySetSplitSuffixAndName_alternatives() {
+    ModuleSplit countrySetSplit =
+        ModuleSplit.builder()
+            .setModuleName(BundleModuleName.create("base"))
+            .setVariantTargeting(lPlusVariantTargeting())
+            .setApkTargeting(
+                apkCountrySetTargeting(
+                    countrySetTargeting(ImmutableList.of(), ImmutableList.of("latam", "sea"))))
+            .setMasterSplit(false)
+            .setAndroidManifest(AndroidManifest.create(androidManifest("com.test.app")))
+            .build();
+    countrySetSplit = countrySetSplit.writeSplitIdInManifest(countrySetSplit.getSuffix());
+    assertThat(countrySetSplit.getAndroidManifest().getSplitId())
+        .hasValue("config.other_countries");
   }
 
   @Test
@@ -471,126 +496,202 @@ public class ModuleSplitTest {
   }
 
   @Test
-  public void forHibernation() throws Exception {
+  public void forArchive() throws Exception {
     BundleModule module =
         new BundleModuleBuilder("testModule")
             .setManifest(androidManifest("com.test.app"))
-            .addFile("res/drawable/background.jpg", DUMMY_CONTENT)
+            .addFile("res/drawable/background.jpg", TEST_CONTENT)
             .build();
-    AndroidManifest hibernatedManifest =
+    AndroidManifest archivedManifest =
         AndroidManifest.create(
             androidManifest("com.test.app", ManifestProtoUtils.withVersionCode(123)));
-    Path hibernatedClassesDexFile = createTempClassesDexFile(DUMMY_CONTENT);
+    ByteSource testContentByteSource = ByteSource.wrap(TEST_CONTENT);
 
     ModuleSplit split =
-        ModuleSplit.forHibernation(
+        ModuleSplit.forArchive(
             module,
-            hibernatedManifest,
-            /* hibernatedResourceTable= */ Optional.empty(),
-            hibernatedClassesDexFile);
+            archivedManifest,
+            ResourceTable.getDefaultInstance(),
+            ImmutableMap.<ZipPath, ByteSource>builder()
+                .put(ZipPath.create("dex").resolve("classes.dex"), testContentByteSource)
+                .put(
+                    ZipPath.create("drawable").resolve("cloud_symbol_xml.proto"),
+                    testContentByteSource)
+                .put(
+                    ZipPath.create("drawable").resolve("opacity_layer_xml.proto"),
+                    testContentByteSource)
+                .build());
 
-    assertThat(split.getSplitType()).isEqualTo(SplitType.HIBERNATION);
+    assertThat(split.getSplitType()).isEqualTo(SplitType.ARCHIVE);
     assertThat(split.getModuleName().getName()).isEqualTo("testModule");
     assertThat(split.getAndroidManifest().getVersionCode()).hasValue(123);
-    assertThat(split.getResourceTable()).isEmpty();
-    assertThat(extractPaths(split.getEntries())).containsExactly("dex/classes.dex");
+    assertThat(split.getResourceTable()).hasValue(ResourceTable.getDefaultInstance());
+    assertThat(extractPaths(split.getEntries()))
+        .containsExactly(
+            "dex/classes.dex",
+            "drawable/cloud_symbol_xml.proto",
+            "drawable/opacity_layer_xml.proto");
   }
 
   @Test
-  public void forHibernation_copiesResourceTable() throws Exception {
+  public void forArchive_copiesResourceTable() throws Exception {
     BundleModule module =
         new BundleModuleBuilder("testModule")
             .setManifest(androidManifest("com.test.app"))
-            .addFile("res/drawable/icon.jpg", DUMMY_CONTENT)
+            .addFile("res/drawable/icon.jpg", TEST_CONTENT)
             .build();
-    AndroidManifest hibernatedManifest =
+    AndroidManifest archivedManifest =
         AndroidManifest.create(
             androidManifest("com.test.app", ManifestProtoUtils.withVersionCode(123)));
-    ResourceTable hibernatedResourceTable =
+    ResourceTable archivedResourceTable =
         new ResourceTableBuilder()
             .addPackage("com.test.app")
             .addDrawableResource("icon", "res/drawable/icon.jpg")
             .build();
-    Path hibernatedClassesDexFile = createTempClassesDexFile(DUMMY_CONTENT);
+    ByteSource testContentByteSource = ByteSource.wrap(TEST_CONTENT);
 
     ModuleSplit split =
-        ModuleSplit.forHibernation(
+        ModuleSplit.forArchive(
             module,
-            hibernatedManifest,
-            Optional.of(hibernatedResourceTable),
-            hibernatedClassesDexFile);
+            archivedManifest,
+            archivedResourceTable,
+            ImmutableMap.of(ZipPath.create("dex").resolve("classes.dex"), testContentByteSource));
 
-    assertThat(split.getResourceTable().get()).isEqualTo(hibernatedResourceTable);
+    assertThat(split.getResourceTable().get()).isEqualTo(archivedResourceTable);
     assertThat(extractPaths(split.getEntries()))
         .containsExactly("res/drawable/icon.jpg", "dex/classes.dex");
   }
 
   @Test
-  public void forHibernation_filtersResources() throws Exception {
+  public void forArchive_filtersResources() throws Exception {
     BundleModule module =
         new BundleModuleBuilder("testModule")
             .setManifest(androidManifest("com.test.app"))
-            .addFile("res/drawable/icon.jpg", DUMMY_CONTENT)
-            .addFile("res/drawable/background.jpg", DUMMY_CONTENT)
+            .addFile("res/drawable/icon.jpg", TEST_CONTENT)
+            .addFile("res/drawable/background.jpg", TEST_CONTENT)
             .build();
-    AndroidManifest hibernatedManifest =
+    AndroidManifest archivedManifest =
         AndroidManifest.create(
             androidManifest("com.test.app", ManifestProtoUtils.withVersionCode(123)));
-    ResourceTable hibernatedResourceTable =
+    ResourceTable archivedResourceTable =
         new ResourceTableBuilder()
             .addPackage("com.test.app")
             .addDrawableResource("icon", "res/drawable/icon.jpg")
             .build();
-    Path hibernatedClassesDexFile = createTempClassesDexFile(DUMMY_CONTENT);
+    ByteSource testContentByteSource = ByteSource.wrap(TEST_CONTENT);
 
     ModuleSplit split =
-        ModuleSplit.forHibernation(
+        ModuleSplit.forArchive(
             module,
-            hibernatedManifest,
-            Optional.of(hibernatedResourceTable),
-            hibernatedClassesDexFile);
+            archivedManifest,
+            archivedResourceTable,
+            ImmutableMap.of(ZipPath.create("dex").resolve("classes.dex"), testContentByteSource));
 
-    assertThat(split.getResourceTable().get()).isEqualTo(hibernatedResourceTable);
+    assertThat(split.getResourceTable().get()).isEqualTo(archivedResourceTable);
     assertThat(extractPaths(split.getEntries()))
         .containsExactly("res/drawable/icon.jpg", "dex/classes.dex");
   }
 
   @Test
-  public void forHibernation_usesHibernatedClassesFile() throws Exception {
+  public void forArchive_usesArchivedClassesFile() throws Exception {
     BundleModule module =
         new BundleModuleBuilder("testModule")
             .setManifest(androidManifest("com.test.app"))
-            .addFile("dex/classes.dex", DUMMY_CONTENT)
+            .addFile("dex/classes.dex", TEST_CONTENT)
             .build();
-    AndroidManifest hibernatedManifest =
+    AndroidManifest archivedManifest =
         AndroidManifest.create(
             androidManifest("com.test.app", ManifestProtoUtils.withVersionCode(123)));
-    byte[] hibernatedClassesDexFileContent = {1, 2};
-    Path hibernatedClassesDexFile = createTempClassesDexFile(hibernatedClassesDexFileContent);
+    byte[] archivedClassesDexFileContent = {1, 2};
+    ByteSource archivedClassesDexByteSource = ByteSource.wrap(archivedClassesDexFileContent);
 
     ModuleSplit split =
-        ModuleSplit.forHibernation(
+        ModuleSplit.forArchive(
             module,
-            hibernatedManifest,
-            /* hibernatedResourceTable= */ Optional.empty(),
-            hibernatedClassesDexFile);
+            archivedManifest,
+            ResourceTable.getDefaultInstance(),
+            ImmutableMap.of(
+                ZipPath.create("dex").resolve("classes.dex"), archivedClassesDexByteSource));
 
     assertThat(extractPaths(split.getEntries())).containsExactly("dex/classes.dex");
     assertThat(split.getEntries().get(0).getContent().read())
-        .isEqualTo(hibernatedClassesDexFileContent);
+        .isEqualTo(archivedClassesDexFileContent);
+  }
+
+  @Test
+  public void addUsesSdkLibraryElements_allElementsPresentInManifest() {
+    String certDigest =
+        "96:C7:EC:89:3E:69:2A:25:BA:4D:EE:C1:84:E8:33:3F:34:7D:6D:12:26:A1:C1:AA:70:A2:8A:DB:75:3E:02:0A";
+    BundleModule module =
+        new BundleModuleBuilder("base").setManifest(androidManifest("com.test.app")).build();
+    ModuleSplit split = ModuleSplit.forModule(module);
+
+    split =
+        split.addUsesSdkLibraryElements(
+            ImmutableSet.of(
+                RuntimeEnabledSdk.newBuilder()
+                    .setPackageName("com.test.sdk1")
+                    .setVersionMajor(1)
+                    .setVersionMinor(2)
+                    .setCertificateDigest(certDigest)
+                    .build(),
+                RuntimeEnabledSdk.newBuilder()
+                    .setPackageName("com.test.sdk2")
+                    .setVersionMajor(2)
+                    .setVersionMinor(3)
+                    .setCertificateDigest(certDigest)
+                    .build()));
+
+    ImmutableList<XmlProtoElement> usesSdkLibraryElements =
+        split.getAndroidManifest().getUsesSdkLibraryElements();
+    assertThat(usesSdkLibraryElements).hasSize(2);
+    assertThat(
+            usesSdkLibraryElements
+                .get(0)
+                .getAndroidAttribute(NAME_RESOURCE_ID)
+                .get()
+                .getValueAsString())
+        .isEqualTo("com.test.sdk1");
+    assertThat(
+            usesSdkLibraryElements
+                .get(0)
+                .getAndroidAttribute(VERSION_MAJOR_RESOURCE_ID)
+                .get()
+                .getValueAsString())
+        .isEqualTo("10002");
+    assertThat(
+            usesSdkLibraryElements
+                .get(0)
+                .getAndroidAttribute(CERTIFICATE_DIGEST_RESOURCE_ID)
+                .get()
+                .getValueAsString())
+        .isEqualTo(certDigest);
+    assertThat(
+            usesSdkLibraryElements
+                .get(1)
+                .getAndroidAttribute(NAME_RESOURCE_ID)
+                .get()
+                .getValueAsString())
+        .isEqualTo("com.test.sdk2");
+    assertThat(
+            usesSdkLibraryElements
+                .get(1)
+                .getAndroidAttribute(VERSION_MAJOR_RESOURCE_ID)
+                .get()
+                .getValueAsString())
+        .isEqualTo("20003");
+    assertThat(
+            usesSdkLibraryElements
+                .get(1)
+                .getAndroidAttribute(CERTIFICATE_DIGEST_RESOURCE_ID)
+                .get()
+                .getValueAsString())
+        .isEqualTo(certDigest);
   }
 
   private ImmutableList<ModuleEntry> fakeEntriesOf(String... entries) {
     return Arrays.stream(entries)
-        .map(entry -> createModuleEntryForFile(entry, DUMMY_CONTENT))
+        .map(entry -> createModuleEntryForFile(entry, TEST_CONTENT))
         .collect(toImmutableList());
-  }
-
-  private Path createTempClassesDexFile(byte[] content) throws IOException {
-    Path tempDexFilePath = Files.createTempFile(tmpDir, "classes", ".dex");
-    try (InputStream inputStream = new ByteArrayInputStream(content)) {
-      Files.copy(inputStream, tempDexFilePath, StandardCopyOption.REPLACE_EXISTING);
-    }
-    return tempDexFilePath;
   }
 }

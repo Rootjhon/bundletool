@@ -18,6 +18,8 @@ package com.android.tools.build.bundletool.mergers;
 
 import static com.android.tools.build.bundletool.model.utils.TargetingProtoUtils.abiUniverse;
 import static com.android.tools.build.bundletool.model.utils.TargetingProtoUtils.abiValues;
+import static com.android.tools.build.bundletool.model.utils.TargetingProtoUtils.countrySetUniverse;
+import static com.android.tools.build.bundletool.model.utils.TargetingProtoUtils.countrySetValues;
 import static com.android.tools.build.bundletool.model.utils.TargetingProtoUtils.densityUniverse;
 import static com.android.tools.build.bundletool.model.utils.TargetingProtoUtils.densityValues;
 import static com.android.tools.build.bundletool.model.utils.TargetingProtoUtils.deviceTierUniverse;
@@ -35,6 +37,7 @@ import com.android.bundle.Files.TargetedAssetsDirectory;
 import com.android.bundle.Targeting.Abi;
 import com.android.bundle.Targeting.AbiTargeting;
 import com.android.bundle.Targeting.ApkTargeting;
+import com.android.bundle.Targeting.CountrySetTargeting;
 import com.android.bundle.Targeting.DeviceTierTargeting;
 import com.android.bundle.Targeting.LanguageTargeting;
 import com.android.bundle.Targeting.MultiAbi;
@@ -44,6 +47,7 @@ import com.android.bundle.Targeting.ScreenDensityTargeting;
 import com.android.bundle.Targeting.TextureCompressionFormat;
 import com.android.bundle.Targeting.TextureCompressionFormatTargeting;
 import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.google.common.collect.Sets;
 import com.google.protobuf.Int32Value;
 import java.util.List;
@@ -77,12 +81,14 @@ final class MergingUtils {
    * Merges two targetings into targeting of an APK shard.
    *
    * <p>Supports only the following targetings:
+   *
    * <ul>
    *   <li>ABI
    *   <li>Screen density
    *   <li>Language
    *   <li>Texture compression format
    *   <li>Device tier
+   *   <li>Country Set
    * </ul>
    *
    * <p>If both targetings target a common dimension, then the targeted universe in that dimension
@@ -119,6 +125,10 @@ final class MergingUtils {
       merged.setDeviceTierTargeting(mergeDeviceTierTargetingsOf(targeting1, targeting2));
     }
 
+    if (targeting1.hasCountrySetTargeting() || targeting2.hasCountrySetTargeting()) {
+      merged.setCountrySetTargeting(mergeCountrySetTargetingsOf(targeting1, targeting2));
+    }
+
     return merged.build();
   }
 
@@ -129,9 +139,11 @@ final class MergingUtils {
       String path = directory.getPath();
       if (assetsDirectories.containsKey(path)) {
         TargetedAssetsDirectory existingDirectory = assetsDirectories.get(path);
-        if (!existingDirectory.equals(directory)) {
-          throw new IllegalStateException(
-              "Encountered conflicting targeting values while merging assets config.");
+        if (!existingDirectory.getTargeting().equals(directory.getTargeting())) {
+          throw InvalidBundleException.builder()
+              .withUserMessage(
+                  "Encountered conflicting targeting values while merging assets config.")
+              .build();
         }
       } else {
         assetsDirectories.put(path, directory);
@@ -140,7 +152,7 @@ final class MergingUtils {
   }
 
   private static void checkTargetingIsSupported(ApkTargeting targeting) {
-    ApkTargeting targetingWithoutAbiDensityLanguageAndTcf =
+    ApkTargeting targetingOtherThanSupportedDimensions =
         targeting.toBuilder()
             .clearAbiTargeting()
             .clearMultiAbiTargeting()
@@ -148,12 +160,13 @@ final class MergingUtils {
             .clearLanguageTargeting()
             .clearTextureCompressionFormatTargeting()
             .clearDeviceTierTargeting()
+            .clearCountrySetTargeting()
             .build();
-    if (!targetingWithoutAbiDensityLanguageAndTcf.equals(ApkTargeting.getDefaultInstance())) {
+    if (!targetingOtherThanSupportedDimensions.equals(ApkTargeting.getDefaultInstance())) {
       throw CommandExecutionException.builder()
           .withInternalMessage(
-              "Expecting only ABI, screen density, language and texture compression format"
-                  + " targeting, got '%s'.",
+              "Expecting only ABI, screen density, language, texture compression format, device"
+                  + " tier and country set targeting, got '%s'.",
               targeting)
           .build();
     }
@@ -224,6 +237,18 @@ final class MergingUtils {
     return DeviceTierTargeting.newBuilder()
         .addAllValue(values.stream().map(Int32Value::of).collect(toImmutableList()))
         .addAllAlternatives(alternatives.stream().map(Int32Value::of).collect(toImmutableList()))
+        .build();
+  }
+
+  private static CountrySetTargeting mergeCountrySetTargetingsOf(
+      ApkTargeting targeting1, ApkTargeting targeting2) {
+    Set<String> universe =
+        Sets.union(countrySetUniverse(targeting1), countrySetUniverse(targeting2));
+    Set<String> values = Sets.union(countrySetValues(targeting1), countrySetValues(targeting2));
+    Set<String> alternatives = Sets.difference(universe, values);
+    return CountrySetTargeting.newBuilder()
+        .addAllValue(values)
+        .addAllAlternatives(alternatives)
         .build();
   }
 

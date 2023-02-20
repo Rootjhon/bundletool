@@ -26,9 +26,11 @@ import com.android.tools.build.bundletool.model.ModuleEntry;
 import com.android.tools.build.bundletool.model.ModuleSplit;
 import com.android.tools.build.bundletool.model.ModuleSplit.SplitType;
 import com.android.tools.build.bundletool.model.SourceStamp;
-import com.android.tools.build.bundletool.model.SourceStamp.StampType;
+import com.android.tools.build.bundletool.model.SourceStampConstants.StampType;
 import com.android.tools.build.bundletool.optimizations.ApkOptimizations;
+import com.android.tools.build.bundletool.splitters.BinaryArtProfilesInjector;
 import com.android.tools.build.bundletool.splitters.CodeTransparencyInjector;
+import com.android.tools.build.bundletool.splitters.RuntimeEnabledSdkTableInjector;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
@@ -45,6 +47,8 @@ public class StandaloneApksGenerator {
   private final Sharder sharder;
   private final ModuleSplitsToShardMerger shardsMerger;
   private final CodeTransparencyInjector codeTransparencyInjector;
+  private final BinaryArtProfilesInjector binaryArtProfilesInjector;
+  private final RuntimeEnabledSdkTableInjector runtimeEnabledSdkTableInjector;
 
   @Inject
   public StandaloneApksGenerator(
@@ -58,7 +62,10 @@ public class StandaloneApksGenerator {
     this.sharder = sharder;
     this.shardsMerger = shardsMerger;
     this.codeTransparencyInjector = new CodeTransparencyInjector(appBundle);
+    this.binaryArtProfilesInjector = new BinaryArtProfilesInjector(appBundle);
+    this.runtimeEnabledSdkTableInjector = new RuntimeEnabledSdkTableInjector(appBundle);
   }
+  ;
 
   /**
    * Generates sharded APKs from the input modules.
@@ -99,10 +106,13 @@ public class StandaloneApksGenerator {
         .map(StandaloneApksGenerator::setVariantTargetingAndSplitType)
         .map(this::writeSourceStampInManifest)
         .map(codeTransparencyInjector::inject)
+        .map(binaryArtProfilesInjector::inject)
+        .map(runtimeEnabledSdkTableInjector::inject)
         .collect(toImmutableList());
   }
 
-  private static ModuleSplit setVariantTargetingAndSplitType(ModuleSplit shard) {
+  /** Sets the variant targeting and split type to standalone. */
+  public static ModuleSplit setVariantTargetingAndSplitType(ModuleSplit shard) {
     return shard.toBuilder()
         .setVariantTargeting(standaloneApkVariantTargeting(shard))
         .setSplitType(SplitType.STANDALONE)

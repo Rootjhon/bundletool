@@ -114,7 +114,9 @@ public abstract class GetSizeCommand implements GetSizeRequest {
           Dimension.LANGUAGE,
           Dimension.SCREEN_DENSITY,
           Dimension.TEXTURE_COMPRESSION_FORMAT,
-          Dimension.DEVICE_TIER);
+          Dimension.DEVICE_TIER,
+          Dimension.COUNTRY_SET,
+          Dimension.SDK_RUNTIME);
 
   public abstract Path getApksArchivePath();
 

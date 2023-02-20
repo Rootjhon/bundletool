@@ -16,18 +16,14 @@
 
 package com.android.tools.build.bundletool.validation;
 
-import static com.google.common.base.Predicates.not;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.android.bundle.Config.BundleConfig;
+import com.android.tools.build.bundletool.model.AppBundle;
 import com.android.tools.build.bundletool.model.BundleModule;
-import com.android.tools.build.bundletool.model.BundleModuleName;
-import com.android.tools.build.bundletool.model.ModuleEntry;
-import com.android.tools.build.bundletool.model.ZipPath;
-import com.android.tools.build.bundletool.model.utils.ZipUtils;
+import com.android.tools.build.bundletool.model.utils.BundleModuleParser;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
-import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
@@ -43,7 +39,7 @@ public class BundleModulesValidator {
   @VisibleForTesting
   static final ImmutableList<SubValidator> MODULE_FILE_SUB_VALIDATORS =
       // Keep order of common validators in sync with AppBundleValidator.
-      ImmutableList.of(new MandatoryFilesPresenceValidator());
+      ImmutableList.of(new MandatoryFilesPresenceValidator(AppBundle.NON_MODULE_DIRECTORIES));
 
   /** Validators run on the internal representation of bundle modules. */
   @VisibleForTesting
@@ -59,6 +55,7 @@ public class BundleModulesValidator {
           new AbiParityValidator(),
           new TextureCompressionFormatParityValidator(),
           new DeviceTierParityValidator(),
+          new CountrySetParityValidator(),
           new DexFilesValidator(),
           new ApexBundleValidator(),
           new AssetBundleValidator(),
@@ -76,40 +73,11 @@ public class BundleModulesValidator {
 
     ImmutableList<BundleModule> modules =
         moduleZips.stream()
-            .map(module -> toBundleModule(module, bundleConfig))
+            .map(module -> BundleModuleParser.parseAppBundleModule(module, bundleConfig))
             .collect(toImmutableList());
 
     new ValidatorRunner(MODULES_SUB_VALIDATORS).validateBundleModules(modules);
 
     return modules;
-  }
-
-  private BundleModule toBundleModule(ZipFile moduleZipFile, BundleConfig bundleConfig) {
-    BundleModule bundleModule =
-        BundleModule.builder()
-            // Assigning a temporary name because the real one will be extracted from the
-            // manifest, but this requires the BundleModule to be built.
-            .setName(BundleModuleName.create("TEMPORARY_MODULE_NAME"))
-            .setBundleConfig(bundleConfig)
-            .addEntries(
-                moduleZipFile.stream()
-                    .filter(not(ZipEntry::isDirectory))
-                    .map(
-                        zipEntry ->
-                            ModuleEntry.builder()
-                                .setPath(ZipPath.create(zipEntry.getName()))
-                                .setContent(ZipUtils.asByteSource(moduleZipFile, zipEntry))
-                                .build())
-                    .collect(toImmutableList()))
-            .build();
-
-    BundleModuleName actualModuleName =
-        bundleModule
-            .getAndroidManifest()
-            .getSplitId()
-            .map(BundleModuleName::create)
-            .orElse(BundleModuleName.BASE_MODULE_NAME);
-
-    return bundleModule.toBuilder().setName(actualModuleName).build();
   }
 }

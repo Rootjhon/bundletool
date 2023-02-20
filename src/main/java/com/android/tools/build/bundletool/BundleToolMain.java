@@ -18,14 +18,20 @@ package com.android.tools.build.bundletool;
 import com.android.tools.build.bundletool.commands.AddTransparencyCommand;
 import com.android.tools.build.bundletool.commands.BuildApksCommand;
 import com.android.tools.build.bundletool.commands.BuildBundleCommand;
+import com.android.tools.build.bundletool.commands.BuildSdkApksCommand;
+import com.android.tools.build.bundletool.commands.BuildSdkApksForAppCommand;
+import com.android.tools.build.bundletool.commands.BuildSdkAsarCommand;
+import com.android.tools.build.bundletool.commands.BuildSdkBundleCommand;
 import com.android.tools.build.bundletool.commands.CheckTransparencyCommand;
 import com.android.tools.build.bundletool.commands.CommandHelp;
 import com.android.tools.build.bundletool.commands.DumpCommand;
+import com.android.tools.build.bundletool.commands.EvaluateDeviceTargetingConfigCommand;
 import com.android.tools.build.bundletool.commands.ExtractApksCommand;
 import com.android.tools.build.bundletool.commands.GetDeviceSpecCommand;
 import com.android.tools.build.bundletool.commands.GetSizeCommand;
 import com.android.tools.build.bundletool.commands.InstallApksCommand;
 import com.android.tools.build.bundletool.commands.InstallMultiApksCommand;
+import com.android.tools.build.bundletool.commands.PrintDeviceTargetingConfigCommand;
 import com.android.tools.build.bundletool.commands.ValidateBundleCommand;
 import com.android.tools.build.bundletool.commands.VersionCommand;
 import com.android.tools.build.bundletool.device.AdbServer;
@@ -75,6 +81,26 @@ public class BundleToolMain {
         case BuildApksCommand.COMMAND_NAME:
           try (AdbServer adbServer = DdmlibAdbServer.getInstance()) {
             BuildApksCommand.fromFlags(flags, adbServer).execute();
+          }
+          break;
+        case BuildSdkBundleCommand.COMMAND_NAME:
+          BuildSdkBundleCommand.fromFlags(flags).execute();
+          break;
+        case BuildSdkApksCommand.COMMAND_NAME:
+          BuildSdkApksCommand.fromFlags(flags).execute();
+          break;
+        case BuildSdkApksForAppCommand.COMMAND_NAME:
+          BuildSdkApksForAppCommand.fromFlags(flags).execute();
+          break;
+        case BuildSdkAsarCommand.COMMAND_NAME:
+          BuildSdkAsarCommand.fromFlags(flags).execute();
+          break;
+        case PrintDeviceTargetingConfigCommand.COMMAND_NAME:
+          PrintDeviceTargetingConfigCommand.fromFlags(flags).execute();
+          break;
+        case EvaluateDeviceTargetingConfigCommand.COMMAND_NAME:
+          try (AdbServer adbServer = DdmlibAdbServer.getInstance()) {
+            EvaluateDeviceTargetingConfigCommand.fromFlags(flags, adbServer).execute(System.out);
           }
           break;
         case ExtractApksCommand.COMMAND_NAME:
@@ -147,6 +173,12 @@ public class BundleToolMain {
         ImmutableList.of(
             BuildBundleCommand.help(),
             BuildApksCommand.help(),
+            BuildSdkBundleCommand.help(),
+            BuildSdkApksCommand.help(),
+            BuildSdkApksForAppCommand.help(),
+            BuildSdkAsarCommand.help(),
+            PrintDeviceTargetingConfigCommand.help(),
+            EvaluateDeviceTargetingConfigCommand.help(),
             ExtractApksCommand.help(),
             GetDeviceSpecCommand.help(),
             InstallApksCommand.help(),
@@ -172,6 +204,24 @@ public class BundleToolMain {
         break;
       case BuildApksCommand.COMMAND_NAME:
         commandHelp = BuildApksCommand.help();
+        break;
+      case BuildSdkBundleCommand.COMMAND_NAME:
+        commandHelp = BuildSdkBundleCommand.help();
+        break;
+      case BuildSdkApksCommand.COMMAND_NAME:
+        commandHelp = BuildSdkApksCommand.help();
+        break;
+      case BuildSdkApksForAppCommand.COMMAND_NAME:
+        commandHelp = BuildSdkApksForAppCommand.help();
+        break;
+      case BuildSdkAsarCommand.COMMAND_NAME:
+        commandHelp = BuildSdkAsarCommand.help();
+        break;
+      case PrintDeviceTargetingConfigCommand.COMMAND_NAME:
+        commandHelp = PrintDeviceTargetingConfigCommand.help();
+        break;
+      case EvaluateDeviceTargetingConfigCommand.COMMAND_NAME:
+        commandHelp = EvaluateDeviceTargetingConfigCommand.help();
         break;
       case ExtractApksCommand.COMMAND_NAME:
         commandHelp = ExtractApksCommand.help();

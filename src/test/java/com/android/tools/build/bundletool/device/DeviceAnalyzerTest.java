@@ -16,6 +16,7 @@
 
 package com.android.tools.build.bundletool.device;
 
+import static com.android.tools.build.bundletool.model.AndroidManifest.SDK_SANDBOX_MIN_VERSION;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.abis;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.density;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.deviceFeatures;
@@ -326,7 +327,8 @@ public class DeviceAnalyzerTest {
     DeviceAnalyzer analyzer = new DeviceAnalyzer(fakeAdbServer);
 
     DeviceSpec deviceSpec = analyzer.getDeviceSpec(Optional.empty());
-    assertThat(deviceSpec.getGlExtensionsList()).containsExactly("GL_EXT_extension1", "GL_EXT_extension2");
+    assertThat(deviceSpec.getGlExtensionsList())
+        .containsExactly("GL_EXT_extension1", "GL_EXT_extension2");
   }
 
   @Test
@@ -407,6 +409,71 @@ public class DeviceAnalyzerTest {
 
     // We couldn't detect locale so we expect to fallback to en-US.
     assertThat(spec.getSupportedLocalesList()).containsExactly("en-US");
+  }
+
+  @Test
+  public void getDeviceSpec_deviceVersionIsPreview_sdkLevelReturnsFeatureLevel() {
+    int apiLevel = 21;
+    int featureLevel = 22;
+    FakeDevice fakeDevice =
+        FakeDevice.fromDeviceSpec(
+            "id1",
+            DeviceState.ONLINE,
+            mergeSpecs(
+                density(240), locales("en-US"), abis("x86"), sdkVersion(apiLevel, "codeName")));
+
+    FakeAdbServer fakeAdbServer =
+        new FakeAdbServer(
+            /* hasInitialDeviceList= */ true, /* devices= */ ImmutableList.of(fakeDevice));
+    fakeAdbServer.init(Paths.get("path/to/adb"));
+
+    DeviceAnalyzer analyzer = new DeviceAnalyzer(fakeAdbServer);
+
+    DeviceSpec deviceSpec = analyzer.getDeviceSpec(Optional.empty());
+    assertThat(deviceSpec.getSdkVersion()).isEqualTo(featureLevel);
+  }
+
+  @Test
+  public void getDeviceSpec_deviceVersionIsSandboxMin_sdkRuntimeSupported() {
+    String deviceId = "id1";
+    FakeDevice fakeDevice =
+        FakeDevice.fromDeviceSpec(
+            deviceId,
+            DeviceState.ONLINE,
+            mergeSpecs(
+                density(240), locales("en-US"), abis("x86"), sdkVersion(SDK_SANDBOX_MIN_VERSION)));
+    FakeAdbServer fakeAdbServer =
+        new FakeAdbServer(
+            /* hasInitialDeviceList= */ true, /* devices= */ ImmutableList.of(fakeDevice));
+    fakeAdbServer.init(Paths.get("path/to/adb"));
+    DeviceAnalyzer analyzer = new DeviceAnalyzer(fakeAdbServer);
+
+    DeviceSpec deviceSpec = analyzer.getDeviceSpec(Optional.of(deviceId));
+
+    assertThat(deviceSpec.getSdkRuntime().getSupported()).isTrue();
+  }
+
+  @Test
+  public void getDeviceSpec_deviceVersionNotSandboxMin_sdkRuntimeNotSupported() {
+    String deviceId = "id1";
+    FakeDevice fakeDevice =
+        FakeDevice.fromDeviceSpec(
+            deviceId,
+            DeviceState.ONLINE,
+            mergeSpecs(
+                density(240),
+                locales("en-US"),
+                abis("x86"),
+                sdkVersion(SDK_SANDBOX_MIN_VERSION - 1)));
+    FakeAdbServer fakeAdbServer =
+        new FakeAdbServer(
+            /* hasInitialDeviceList= */ true, /* devices= */ ImmutableList.of(fakeDevice));
+    fakeAdbServer.init(Paths.get("path/to/adb"));
+    DeviceAnalyzer analyzer = new DeviceAnalyzer(fakeAdbServer);
+
+    DeviceSpec deviceSpec = analyzer.getDeviceSpec(Optional.of(deviceId));
+
+    assertThat(deviceSpec.getSdkRuntime().getSupported()).isFalse();
   }
 
   private static Device createUsbEnabledDevice(String serialNumber) {

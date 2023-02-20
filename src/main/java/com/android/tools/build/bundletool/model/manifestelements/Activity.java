@@ -42,19 +42,23 @@ import java.util.Optional;
 public abstract class Activity {
   public static final String EXCLUDE_FROM_RECENTS_ELEMENT_NAME = "excludeFromRecents";
   public static final String STATE_NOT_NEEDED_ELEMENT_NAME = "stateNotNeeded";
+  public static final String NO_HISTORY_ELEMENT_NAME = "noHistory";
 
   public static final int EXCLUDE_FROM_RECENTS_RESOURCE_ID = 0x01010017;
   public static final int STATE_NOT_NEEDED_RESOURCE_ID = 0x01010016;
+  public static final int NO_HISTORY_RESOURCE_ID = 0x0101022d;
 
   abstract Optional<String> getName();
 
-  abstract Optional<String> getTheme();
+  abstract Optional<Integer> getTheme();
 
   abstract Optional<Boolean> getExported();
 
   abstract Optional<Boolean> getExcludeFromRecents();
 
   abstract Optional<Boolean> getStateNotNeeded();
+
+  abstract Optional<Boolean> getNoHistory();
 
   abstract Optional<IntentFilter> getIntentFilter();
 
@@ -70,6 +74,7 @@ public abstract class Activity {
     setExportedAttribute(elementBuilder);
     setExcludeFromRecentsAttribute(elementBuilder);
     setStateNotNeeded(elementBuilder);
+    setNoHistory(elementBuilder);
     setIntentFilterElement(elementBuilder);
     return elementBuilder.build();
   }
@@ -86,7 +91,7 @@ public abstract class Activity {
     if (getTheme().isPresent()) {
       elementBuilder
           .getOrCreateAndroidAttribute(THEME_ATTRIBUTE_NAME, THEME_RESOURCE_ID)
-          .setValueAsString(getTheme().get());
+          .setValueAsRefId(getTheme().get());
     }
   }
 
@@ -115,6 +120,14 @@ public abstract class Activity {
     }
   }
 
+  private void setNoHistory(XmlProtoElementBuilder elementBuilder) {
+    if (getNoHistory().isPresent()) {
+      elementBuilder
+          .getOrCreateAndroidAttribute(NO_HISTORY_ELEMENT_NAME, NO_HISTORY_RESOURCE_ID)
+          .setValueAsBoolean(getNoHistory().get());
+    }
+  }
+
   private void setIntentFilterElement(XmlProtoElementBuilder elementBuilder) {
     if (getIntentFilter().isPresent()) {
       elementBuilder.addChildElement(getIntentFilter().get().asXmlProtoElement().toBuilder());
@@ -126,13 +139,15 @@ public abstract class Activity {
   public abstract static class Builder {
     public abstract Builder setName(String name);
 
-    public abstract Builder setTheme(String theme);
+    public abstract Builder setTheme(int themeResId);
 
     public abstract Builder setExported(boolean exported);
 
     public abstract Builder setExcludeFromRecents(boolean excludeFromRecents);
 
     public abstract Builder setStateNotNeeded(boolean stateNotNeeded);
+
+    public abstract Builder setNoHistory(boolean noHistory);
 
     public abstract Builder setIntentFilter(IntentFilter intentFilter);
 

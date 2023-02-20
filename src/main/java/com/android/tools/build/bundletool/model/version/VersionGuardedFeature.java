@@ -128,4 +128,8 @@ public enum VersionGuardedFeature {
 
     return disabledSinceVersion.map(bundletoolVersion::isOlderThan).orElse(true);
   }
+
+  public Version getEnabledSinceVersion() {
+    return enabledSinceVersion;
+  }
 }

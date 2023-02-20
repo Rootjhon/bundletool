@@ -24,16 +24,23 @@ import com.android.bundle.Config.BundleConfig;
 import com.android.bundle.Files.ApexImages;
 import com.android.bundle.Files.Assets;
 import com.android.bundle.Files.NativeLibraries;
+import com.android.bundle.RuntimeEnabledSdkConfigProto.RuntimeEnabledSdkConfig;
+import com.android.bundle.SdkModulesConfigOuterClass.SdkModulesConfig;
 import com.android.tools.build.bundletool.model.BundleModule;
+import com.android.tools.build.bundletool.model.BundleModule.ModuleType;
 import com.android.tools.build.bundletool.model.BundleModuleName;
 import com.android.tools.build.bundletool.model.ModuleEntry;
-import com.android.tools.build.bundletool.model.ModuleEntry.ModuleEntryBundleLocation;
+import com.android.tools.build.bundletool.model.ModuleEntry.ModuleEntryLocationInZipSource;
 import com.android.tools.build.bundletool.model.ZipPath;
 import com.android.tools.build.bundletool.model.utils.xmlproto.XmlProtoNode;
 import com.android.tools.build.bundletool.model.utils.xmlproto.XmlProtoNodeBuilder;
+import com.android.tools.build.bundletool.model.version.BundleToolVersion;
+import com.android.tools.build.bundletool.model.version.Version;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.io.ByteSource;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.nio.file.Path;
+import java.util.Optional;
 
 /** Builder to build a {@link BundleModule}. */
 public class BundleModuleBuilder {
@@ -45,6 +52,10 @@ public class BundleModuleBuilder {
   private BundleConfig bundleConfig = DEFAULT_BUNDLE_CONFIG;
 
   private XmlNode androidManifest = null;
+
+  private Optional<ModuleType> moduleTypeOptional = Optional.empty();
+
+  private Optional<SdkModulesConfig> sdkModulesConfigOptional = Optional.empty();
 
   public BundleModuleBuilder(String moduleName) {
     checkNotNull(moduleName);
@@ -80,7 +91,7 @@ public class BundleModuleBuilder {
         ModuleEntry.builder()
             .setContent(ByteSource.empty())
             .setPath(ZipPath.create(relativePath))
-            .setBundleLocation(ModuleEntryBundleLocation.create(zipFilePath, entryFullZipPath))
+            .setFileLocation(ModuleEntryLocationInZipSource.create(zipFilePath, entryFullZipPath))
             .build());
     return this;
   }
@@ -99,7 +110,7 @@ public class BundleModuleBuilder {
         ModuleEntry.builder()
             .setContent(ByteSource.wrap(content))
             .setPath(ZipPath.create(relativePath))
-            .setBundleLocation(ModuleEntryBundleLocation.create(zipFilePath, entryFullZipPath))
+            .setFileLocation(ModuleEntryLocationInZipSource.create(zipFilePath, entryFullZipPath))
             .build());
     return this;
   }
@@ -128,8 +139,25 @@ public class BundleModuleBuilder {
     return this;
   }
 
+  public BundleModuleBuilder setRuntimeEnabledSdkConfig(
+      RuntimeEnabledSdkConfig runtimeEnabledSdkConfig) {
+    addFile("runtime_enabled_sdk_config.pb", runtimeEnabledSdkConfig.toByteArray());
+    return this;
+  }
+
+  @CanIgnoreReturnValue
+  public BundleModuleBuilder setSdkModulesConfig(SdkModulesConfig sdkModulesConfig) {
+    this.sdkModulesConfigOptional = Optional.of(sdkModulesConfig);
+    return this;
+  }
+
   public BundleModuleBuilder setManifest(XmlNode androidManifest) {
     this.androidManifest = androidManifest;
+    return this;
+  }
+
+  public BundleModuleBuilder setModuleType(ModuleType moduleType) {
+    this.moduleTypeOptional = Optional.of(moduleType);
     return this;
   }
 
@@ -151,10 +179,22 @@ public class BundleModuleBuilder {
       addFile("manifest/AndroidManifest.xml", manifestBuilder.build().getProto().toByteArray());
     }
 
-    return BundleModule.builder()
-        .setName(moduleName)
-        .addEntries(entries.build())
-        .setBundleConfig(bundleConfig)
-        .build();
+    BundleModule.Builder bundleModuleBuilder =
+        BundleModule.builder()
+            .setName(moduleName)
+            .addEntries(entries.build())
+            .setBundleType(bundleConfig.getType())
+            .setBundletoolVersion(BundleToolVersion.getCurrentVersion());
+    moduleTypeOptional.ifPresent(bundleModuleBuilder::setModuleType);
+    sdkModulesConfigOptional.ifPresent(bundleModuleBuilder::setSdkModulesConfig);
+
+    if (!bundleConfig.getBundletool().getVersion().isEmpty()) {
+      bundleModuleBuilder.setBundletoolVersion(
+          Version.of(bundleConfig.getBundletool().getVersion()));
+    }
+    if (bundleConfig.hasApexConfig()) {
+      bundleModuleBuilder.setBundleApexConfig(bundleConfig.getApexConfig());
+    }
+    return bundleModuleBuilder.build();
   }
 }

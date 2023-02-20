@@ -16,9 +16,11 @@
 
 package com.android.tools.build.bundletool.device;
 
+import static com.android.tools.build.bundletool.model.AndroidManifest.SDK_SANDBOX_MIN_VERSION;
 import static com.google.common.base.Preconditions.checkState;
 
 import com.android.bundle.Devices.DeviceSpec;
+import com.android.bundle.Devices.SdkRuntime;
 import com.android.ddmlib.IDevice.DeviceState;
 import com.android.tools.build.bundletool.device.activitymanager.ActivityManagerRunner;
 import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
@@ -53,8 +55,12 @@ public class DeviceAnalyzer {
       Device device = getAndValidateDevice(deviceId);
 
       // device.getVersion().getApiLevel() returns 1 in case of failure.
-      int deviceSdkVersion = device.getVersion().getApiLevel();
-      checkState(deviceSdkVersion > 1, "Error retrieving device SDK version. Please try again.");
+      checkState(
+          device.getVersion().getApiLevel() > 1,
+          "Error retrieving device SDK version. Please try again.");
+      // We want to consider device's feature level instead of API level so that targeting matching
+      // is done properly on preview builds.
+      int deviceSdkVersion = device.getVersion().getFeatureLevel();
       String codename = device.getVersion().getCodename();
       int deviceDensity = device.getDensity();
       checkState(deviceDensity > 0, "Error retrieving device density. Please try again.");
@@ -74,6 +80,9 @@ public class DeviceAnalyzer {
       }
       checkState(!supportedAbis.isEmpty(), "Error retrieving device ABIs. Please try again.");
 
+      SdkRuntime sdkRuntime =
+          SdkRuntime.newBuilder().setSupported(deviceSdkVersion >= SDK_SANDBOX_MIN_VERSION).build();
+
       DeviceSpec.Builder builder =
           DeviceSpec.newBuilder()
               .setSdkVersion(deviceSdkVersion)
@@ -81,7 +90,8 @@ public class DeviceAnalyzer {
               .addAllSupportedLocales(deviceLocales)
               .setScreenDensity(deviceDensity)
               .addAllDeviceFeatures(deviceFeatures)
-              .addAllGlExtensions(glExtensions);
+              .addAllGlExtensions(glExtensions)
+              .setSdkRuntime(sdkRuntime);
       if (codename != null) {
         builder.setCodename(codename);
       }

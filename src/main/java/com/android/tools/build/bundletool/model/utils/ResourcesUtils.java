@@ -22,6 +22,7 @@ import static java.util.Comparator.comparing;
 
 import com.android.aapt.Resources.ConfigValue;
 import com.android.aapt.Resources.Entry;
+import com.android.aapt.Resources.FileReference;
 import com.android.aapt.Resources.Package;
 import com.android.aapt.Resources.ResourceTable;
 import com.android.aapt.Resources.Type;
@@ -46,6 +47,9 @@ import java.util.stream.Stream;
 
 /** Helpers related to APK resources qualifiers. */
 public final class ResourcesUtils {
+
+  /** Package IDs of system shared libraries and android resources. */
+  private static final ImmutableSet<Integer> ANDROID_PACKAGE_IDS = ImmutableSet.of(0x00, 0x01);
 
   private static final LoadingCache<String, String> localeToLanguageCache =
       CacheBuilder.newBuilder()
@@ -173,9 +177,15 @@ public final class ResourcesUtils {
   }
 
   public static ImmutableSet<ZipPath> getAllFileReferences(ResourceTable resourceTable) {
-    return configValues(resourceTable)
-        .filter(configValue -> configValue.getValue().getItem().hasFile())
-        .map(configValue -> ZipPath.create(configValue.getValue().getItem().getFile().getPath()))
+    return getAllFileReferencesInternal(resourceTable)
+        .map(fileReference -> ZipPath.create(fileReference.getPath()))
+        .collect(toImmutableSet());
+  }
+
+  public static ImmutableSet<ZipPath> getAllProtoXmlFileReferences(ResourceTable resourceTable) {
+    return getAllFileReferencesInternal(resourceTable)
+        .filter(fileReference -> fileReference.getType().equals(FileReference.Type.PROTO_XML))
+        .map(fileReference -> ZipPath.create(fileReference.getPath()))
         .collect(toImmutableSet());
   }
 
@@ -234,9 +244,41 @@ public final class ResourcesUtils {
         .collect(toImmutableSet());
   }
 
+  /** Returns all locales present in a given resource table. */
+  public static ImmutableSet<String> getAllLocales(ResourceTable table) {
+    return configValues(table)
+        .map(configValue -> configValue.getConfig().getLocale())
+        .collect(toImmutableSet());
+  }
+
   /** Returns the smallest screen density from the ones given. */
   public static DensityAlias getLowestDensity(ImmutableCollection<DensityAlias> densities) {
     return densities.stream().min(comparing(DENSITY_ALIAS_TO_DPI_MAP::get)).get();
+  }
+
+  /**
+   * Returns new resource ID which is obtained from setting package ID part of {@code resourceId} to
+   * {@code newPackageId}.
+   *
+   * <p>First 8 bits of {@code resourceId} represent the package ID.
+   */
+  public static int remapPackageIdInResourceId(int resourceId, int newPackageId) {
+    return (newPackageId << 24) | (resourceId & 0xffffff);
+  }
+
+  /** Returns `true` if the given resource ID belongs to an Android Framework resource. */
+  public static boolean isAndroidResourceId(int resourceId) {
+    return ANDROID_PACKAGE_IDS.contains(getPackageId(resourceId));
+  }
+  /** Extracts package ID from the given {@code resourceId} (first 8 bits). */
+  private static int getPackageId(int resourceId) {
+    return resourceId >> 24;
+  }
+
+  private static Stream<FileReference> getAllFileReferencesInternal(ResourceTable resourceTable) {
+    return configValues(resourceTable)
+        .filter(configValue -> configValue.getValue().getItem().hasFile())
+        .map(configValue -> configValue.getValue().getItem().getFile());
   }
 
   // Not meant to be instantiated.

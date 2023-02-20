@@ -20,12 +20,15 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.android.bundle.CodeTransparencyOuterClass.CodeRelatedFile;
 import com.android.bundle.CodeTransparencyOuterClass.CodeTransparency;
+import com.android.tools.build.bundletool.archive.ArchivedResourcesHelper;
+import com.android.tools.build.bundletool.io.ResourceReader;
 import com.android.tools.build.bundletool.model.AppBundle;
 import com.android.tools.build.bundletool.model.BundleModule;
 import com.android.tools.build.bundletool.model.ModuleEntry;
 import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.hash.Hashing;
+import com.google.common.io.ByteSource;
 import com.google.protobuf.util.JsonFormat;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -39,14 +42,46 @@ public final class CodeTransparencyFactory {
   public static CodeTransparency createCodeTransparencyMetadata(AppBundle bundle) {
     ImmutableList<CodeRelatedFile> codeRelatedFiles =
         bundle.getFeatureModules().values().stream()
-            .flatMap(bundleModule -> getCodeRelatedFileEntries(bundleModule))
+            .flatMap(CodeTransparencyFactory::getCodeRelatedFileEntries)
             .map(CodeTransparencyFactory::createCodeRelatedFile)
             .sorted(Comparator.comparing(CodeRelatedFile::getPath))
             .collect(toImmutableList());
-    return CodeTransparency.newBuilder()
-        .setVersion(CodeTransparencyVersion.getCurrentVersion())
-        .addAllCodeRelatedFile(codeRelatedFiles)
-        .build();
+
+    CodeTransparency.Builder codeTransparencyBuilder =
+        CodeTransparency.newBuilder()
+            .setVersion(CodeTransparencyVersion.getCurrentVersion())
+            .addAllCodeRelatedFile(codeRelatedFiles);
+
+    if (bundle.getStoreArchive().orElse(true)) {
+      codeTransparencyBuilder.addCodeRelatedFile(createArchivedCodeRelatedFile(bundle));
+    }
+
+    return codeTransparencyBuilder.build();
+  }
+
+  /** Returns {@link CodeRelatedFile} for the given {@link AppBundle} for archived DEX file */
+  private static CodeRelatedFile createArchivedCodeRelatedFile(AppBundle bundle) {
+    CodeRelatedFile.Builder codeRelatedFile =
+        CodeRelatedFile.newBuilder().setType(CodeRelatedFile.Type.DEX);
+
+    try {
+      ResourceReader resourceReader = new ResourceReader();
+      ArchivedResourcesHelper archivedResourcesHelper =
+          new ArchivedResourcesHelper(resourceReader);
+      String resourcePath =
+          archivedResourcesHelper.findArchivedClassesDexPath(
+              bundle.getVersion(), /* transparencyEnabled= */ true);
+      codeRelatedFile.setBundletoolRepoPath(resourcePath);
+      ByteSource byteSource = resourceReader.getResourceByteSource(resourcePath);
+      codeRelatedFile.setSha256(byteSource.hash(Hashing.sha256()).toString());
+    } catch (IOException e) {
+      throw InvalidBundleException.builder()
+          .withUserMessage("Unable to create an archived code related file.")
+          .withCause(e)
+          .build();
+    }
+
+    return codeRelatedFile.build();
   }
 
   /** Returns {@link CodeTransparency} parsed from transparency file JSON payload. */
@@ -68,10 +103,10 @@ public final class CodeTransparencyFactory {
   }
 
   private static CodeRelatedFile createCodeRelatedFile(ModuleEntry moduleEntry) {
-    checkArgument(moduleEntry.getBundleLocation().isPresent());
+    checkArgument(moduleEntry.getFileLocation().isPresent());
     CodeRelatedFile.Builder codeRelatedFile =
         CodeRelatedFile.newBuilder()
-            .setPath(moduleEntry.getBundleLocation().get().entryPathInBundle().toString());
+            .setPath(moduleEntry.getFileLocation().get().entryPathInFile().toString());
     if (moduleEntry.getPath().startsWith(BundleModule.LIB_DIRECTORY)) {
       codeRelatedFile.setType(CodeRelatedFile.Type.NATIVE_LIBRARY);
       codeRelatedFile.setApkPath(moduleEntry.getPath().toString());

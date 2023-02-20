@@ -34,6 +34,7 @@ import com.android.bundle.Targeting.AbiTargeting;
 import com.android.bundle.Targeting.ApexImageTargeting;
 import com.android.bundle.Targeting.ApkTargeting;
 import com.android.bundle.Targeting.AssetsDirectoryTargeting;
+import com.android.bundle.Targeting.CountrySetTargeting;
 import com.android.bundle.Targeting.DeviceFeature;
 import com.android.bundle.Targeting.DeviceFeatureTargeting;
 import com.android.bundle.Targeting.DeviceGroupModuleTargeting;
@@ -49,6 +50,7 @@ import com.android.bundle.Targeting.SanitizerTargeting;
 import com.android.bundle.Targeting.ScreenDensity;
 import com.android.bundle.Targeting.ScreenDensity.DensityAlias;
 import com.android.bundle.Targeting.ScreenDensityTargeting;
+import com.android.bundle.Targeting.SdkRuntimeTargeting;
 import com.android.bundle.Targeting.SdkVersion;
 import com.android.bundle.Targeting.SdkVersionTargeting;
 import com.android.bundle.Targeting.TextureCompressionFormat;
@@ -118,6 +120,11 @@ public final class TargetingUtils {
   public static AssetsDirectoryTargeting assetsDirectoryTargeting(
       DeviceTierTargeting deviceTierTargeting) {
     return AssetsDirectoryTargeting.newBuilder().setDeviceTier(deviceTierTargeting).build();
+  }
+
+  public static AssetsDirectoryTargeting assetsDirectoryTargeting(
+      CountrySetTargeting countrySetTargeting) {
+    return AssetsDirectoryTargeting.newBuilder().setCountrySet(countrySetTargeting).build();
   }
 
   // Native.pb helper methods.
@@ -372,6 +379,10 @@ public final class TargetingUtils {
 
   public static ApkTargeting apkDeviceTierTargeting(DeviceTierTargeting deviceTierTargeting) {
     return ApkTargeting.newBuilder().setDeviceTierTargeting(deviceTierTargeting).build();
+  }
+
+  public static ApkTargeting apkCountrySetTargeting(CountrySetTargeting countrySetTargeting) {
+    return ApkTargeting.newBuilder().setCountrySetTargeting(countrySetTargeting).build();
   }
 
   // Variant Targeting helpers. Should be written in terms of existing targeting dimension protos or
@@ -862,6 +873,33 @@ public final class TargetingUtils {
         .build();
   }
 
+  // Country Set targeting.
+
+  public static CountrySetTargeting countrySetTargeting(String value) {
+    return CountrySetTargeting.newBuilder().addValue(value).build();
+  }
+
+  public static CountrySetTargeting countrySetTargeting(
+      String value, ImmutableList<String> alternatives) {
+    return CountrySetTargeting.newBuilder()
+        .addValue(value)
+        .addAllAlternatives(alternatives)
+        .build();
+  }
+
+  public static CountrySetTargeting countrySetTargeting(
+      ImmutableList<String> value, ImmutableList<String> alternatives) {
+    return CountrySetTargeting.newBuilder()
+        .addAllValue(value)
+        .addAllAlternatives(alternatives)
+        .build();
+  }
+
+  public static CountrySetTargeting alternativeCountrySetTargeting(
+      ImmutableList<String> alternatives) {
+    return CountrySetTargeting.newBuilder().addAllAlternatives(alternatives).build();
+  }
+
   // Device Feature targeting.
 
   public static DeviceFeatureTargeting deviceFeatureTargeting(String featureName) {
@@ -928,6 +966,41 @@ public final class TargetingUtils {
 
   public static VariantTargeting lPlusVariantTargeting() {
     return variantMinSdkTargeting(Versions.ANDROID_L_API_VERSION);
+  }
+
+  public static VariantTargeting sdkRuntimeVariantTargeting() {
+    return sdkRuntimeVariantTargeting(Versions.ANDROID_T_API_VERSION);
+  }
+
+  public static VariantTargeting sdkRuntimeVariantTargeting(SdkVersion androidSdkVersion) {
+    return sdkRuntimeVariantTargeting(androidSdkVersion.getMin().getValue());
+  }
+
+  public static VariantTargeting sdkRuntimeVariantTargeting(int androidSdkVersion) {
+    return sdkRuntimeVariantTargeting(
+        androidSdkVersion, /* alternativeSdkVersions= */ ImmutableSet.of());
+  }
+
+  public static VariantTargeting sdkRuntimeVariantTargeting(
+      SdkVersion androidSdkVersion, ImmutableSet<SdkVersion> alternativeSdkVersions) {
+    return sdkRuntimeVariantTargeting(
+        androidSdkVersion.getMin().getValue(),
+        alternativeSdkVersions.stream()
+            .map(sdkVersion -> sdkVersion.getMin().getValue())
+            .collect(toImmutableSet()));
+  }
+
+  public static VariantTargeting sdkRuntimeVariantTargeting(
+      int androidSdkVersion, ImmutableSet<Integer> alternativeSdkVersions) {
+    return VariantTargeting.newBuilder()
+        .setSdkRuntimeTargeting(SdkRuntimeTargeting.newBuilder().setRequiresSdkRuntime(true))
+        .setSdkVersionTargeting(
+            sdkVersionTargeting(
+                sdkVersionFrom(androidSdkVersion),
+                alternativeSdkVersions.stream()
+                    .map(TargetingUtils::sdkVersionFrom)
+                    .collect(toImmutableSet())))
+        .build();
   }
 
   // Not meant to be instantiated.
